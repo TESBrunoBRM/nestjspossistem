@@ -4,6 +4,7 @@ import axios, { AxiosInstance } from 'axios';
 import FormData from 'form-data';
 import { EmitirBoletaDto } from './dto/emitir-boleta.dto';
 import { EmitirFacturaDto } from './dto/emitir-factura.dto';
+import { EmitirNotaCreditoDto } from './dto/emitir-nota-credito.dto';
 
 @Injectable()
 export class SiiService {
@@ -204,6 +205,123 @@ export class SiiService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // NUEVAS FUNCIONALIDADES SOLICITADAS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Genera una Nota de Crédito (tipo 61) usando SimpleAPI.
+   * La estructura de datos esperada es la misma que una factura,
+   * pero con exigencia en el arreglo de Referencias.
+   */
+  async emitirNotaCredito(
+    dto: EmitirNotaCreditoDto,
+    certificadoFile: Express.Multer.File,
+    cafFile: Express.Multer.File,
+  ): Promise<unknown> {
+    this.logger.log(`Emitiendo Nota de Crédito folio=${dto.IdentificacionDTE.Folio}`);
+
+    // Nota de crédito usa la misma estructura base de documento que la factura
+    const documento = this.buildDocumentoFactura(dto as unknown as EmitirFacturaDto);
+
+    const form = new FormData();
+    form.append('documento', JSON.stringify(documento));
+    form.append('certificado', certificadoFile.buffer, {
+      filename: certificadoFile.originalname,
+      contentType: 'application/x-pkcs12',
+    });
+    form.append('caf', cafFile.buffer, {
+      filename: cafFile.originalname,
+      contentType: 'application/xml',
+    });
+
+    // Usa el mismo endpoint de envío de documentos genéricos para B2B
+    return this.callSimpleApi('/api/v1/dte/documento', form);
+  }
+
+  /**
+   * Genera el sobre de envío al SII de los comprobantes.
+   * Algunas versiones de SimpleAPI realizan esto automáticamente, 
+   * pero se expone en caso de usarse el endpoint explícito.
+   */
+  async generarSobreEnvio(datosEnvio: any, certificadoFile: Express.Multer.File): Promise<unknown> {
+    this.logger.log('Generando sobre de envío SII');
+    const form = new FormData();
+    form.append('datos', JSON.stringify(datosEnvio));
+    form.append('certificado', certificadoFile.buffer, {
+      filename: certificadoFile.originalname,
+      contentType: 'application/x-pkcs12',
+    });
+    return this.callSimpleApi('/api/v1/dte/sobre_envio', form);
+  }
+
+  /**
+   * Genera el Registro de Ventas Diarias (RVD / RCOF).
+   */
+  async generarRvd(datosRvd: any, certificadoFile: Express.Multer.File): Promise<unknown> {
+    this.logger.log('Generando RVD');
+    const form = new FormData();
+    form.append('datos', JSON.stringify(datosRvd));
+    form.append('certificado', certificadoFile.buffer, {
+      filename: certificadoFile.originalname,
+      contentType: 'application/x-pkcs12',
+    });
+    return this.callSimpleApi('/api/v1/dte/rvd', form);
+  }
+
+  /**
+   * Obtiene la imagen del timbre (PDF417) de un documento específico.
+   */
+  async obtenerTimbre(datosTimbre: any): Promise<unknown> {
+    this.logger.log('Solicitando imagen del timbre TED');
+    const form = new FormData();
+    form.append('datos', JSON.stringify(datosTimbre));
+    return this.callSimpleApi('/api/v1/dte/timbre', form);
+  }
+
+  /**
+   * Obtiene la muestra impresa (PDF) de un DTE.
+   */
+  async obtenerMuestraImpresa(datosImpresion: any): Promise<unknown> {
+    this.logger.log('Solicitando generación de PDF Muestra Impresa');
+    const form = new FormData();
+    form.append('datos', JSON.stringify(datosImpresion));
+    return this.callSimpleApi('/api/v1/dte/pdf', form);
+  }
+
+  /**
+   * Validador de esquema de DTE o Sobre.
+   */
+  async validarDte(xmlBase64: string): Promise<unknown> {
+    this.logger.log('Validando estructura de XML DTE');
+    const form = new FormData();
+    form.append('xml', xmlBase64);
+    return this.callSimpleApi('/api/v1/dte/validar', form);
+  }
+
+  /**
+   * Obtención de Folios (CAF) directo desde el SII a través de SimpleAPI.
+   */
+  async obtenerFolios(datosFolios: any, certificadoFile: Express.Multer.File): Promise<unknown> {
+    this.logger.log('Solicitando descarga de Folios CAF al SII');
+    const form = new FormData();
+    form.append('datos', JSON.stringify(datosFolios));
+    form.append('certificado', certificadoFile.buffer, {
+      filename: certificadoFile.originalname,
+      contentType: 'application/x-pkcs12',
+    });
+    return this.callSimpleApi('/api/v1/dte/caf', form);
+  }
+
+  /**
+   * Obtener datos de empresa o contribuyente por RUT.
+   * Utiliza SimpleAPI para obtener la Razón Social y otros datos.
+   */
+  async obtenerDatosEmpresa(rut: string): Promise<unknown> {
+    this.logger.log(`Obteniendo datos de empresa para RUT: ${rut}`);
+    return this.callSimpleApiGet(`/api/v1/sii/datos_empresa/${rut}`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // HELPERS PRIVADOS
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -373,7 +491,7 @@ export class SiiService {
     };
   }
 
-  /** Ejecuta la llamada a SimpleAPI con FormData */
+  /** Ejecuta la llamada a SimpleAPI con FormData (POST) */
   private async callSimpleApi(endpoint: string, form: FormData): Promise<unknown> {
     try {
       const response = await this.http.post(endpoint, form, {
@@ -384,22 +502,40 @@ export class SiiService {
       });
       return response.data;
     } catch (error: unknown) {
-      const axiosError = error as {
-        response?: { data: unknown; status: number };
-        message?: string;
-      };
-      this.logger.error(
-        `Error llamando SimpleAPI [${endpoint}]`,
-        axiosError?.response?.data ?? axiosError?.message,
-      );
-      throw new HttpException(
-        {
-          message: 'Error al comunicarse con SimpleAPI',
-          details: axiosError?.response?.data ?? axiosError?.message,
-          endpoint,
-        },
-        axiosError?.response?.status ?? HttpStatus.BAD_GATEWAY,
-      );
+      this.handleApiError(error, endpoint);
     }
+  }
+
+  /** Ejecuta una llamada GET a SimpleAPI */
+  private async callSimpleApiGet(endpoint: string, params?: any): Promise<unknown> {
+    try {
+      const response = await this.http.get(endpoint, {
+        params,
+        headers: { Authorization: this.apiKey },
+      });
+      return response.data;
+    } catch (error: unknown) {
+      this.handleApiError(error, endpoint);
+    }
+  }
+
+  /** Manejo centralizado de errores de Axios */
+  private handleApiError(error: unknown, endpoint: string): never {
+    const axiosError = error as {
+      response?: { data: unknown; status: number };
+      message?: string;
+    };
+    this.logger.error(
+      `Error llamando SimpleAPI [${endpoint}]`,
+      axiosError?.response?.data ?? axiosError?.message,
+    );
+    throw new HttpException(
+      {
+        message: 'Error al comunicarse con SimpleAPI',
+        details: axiosError?.response?.data ?? axiosError?.message,
+        endpoint,
+      },
+      axiosError?.response?.status ?? HttpStatus.BAD_GATEWAY,
+    );
   }
 }

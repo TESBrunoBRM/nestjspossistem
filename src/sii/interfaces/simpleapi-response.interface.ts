@@ -66,3 +66,26 @@ export interface EstadoDteResponse {
   /** Glosa descriptiva */
   glosa?: string;
 }
+
+export interface TimbreResponse {
+  /** Imagen del timbre en formato Base64 o string */
+  timbreBase64?: string;
+}
+
+export interface MuestraImpresaResponse {
+  /** Documento base64 en formato PDF */
+  pdfBase64?: string;
+}
+
+export interface ValidadorResponse {
+  /** Resultado de la validación estructural o esquema */
+  valido: boolean;
+  errores?: string[];
+}
+
+export interface FoliosResponse {
+  /** Archivo CAF (Base64) */
+  cafBase64?: string;
+  /** Cantidad de folios disponibles */
+  disponibles?: number;
+}

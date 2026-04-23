@@ -9,12 +9,15 @@ import {
   BadRequestException,
   Query,
   Logger,
+  UseGuards,
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
+import { ApiKeyGuard } from '../auth/api-key.guard';
 import { SiiService } from './sii.service';
 import { EmitirBoletaDto } from './dto/emitir-boleta.dto';
 import { EmitirFacturaDto } from './dto/emitir-factura.dto';
+import { EmitirNotaCreditoDto } from './dto/emitir-nota-credito.dto';
 
 /**
  * Controlador SII — Integración SimpleAPI
@@ -29,7 +32,9 @@ import { EmitirFacturaDto } from './dto/emitir-factura.dto';
  *    -F "datos={...JSON...}" \
  *    -F "certificado=@/ruta/certificado.pfx" \
  *    -F "caf=@/ruta/caf_39.xml"
+ *    -H "x-api-key: TU_API_KEY"
  */
+@UseGuards(ApiKeyGuard)
 @Controller('sii')
 export class SiiController {
   private readonly logger = new Logger(SiiController.name);
@@ -70,7 +75,7 @@ export class SiiController {
         { name: 'certificado', maxCount: 1 },
         { name: 'caf', maxCount: 1 },
       ],
-      { storage: memoryStorage() },
+      { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } },
     ),
   )
   async emitirBoleta(
@@ -139,7 +144,7 @@ export class SiiController {
         { name: 'certificado', maxCount: 1 },
         { name: 'caf', maxCount: 1 },
       ],
-      { storage: memoryStorage() },
+      { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } },
     ),
   )
   async emitirFactura(
@@ -205,7 +210,7 @@ export class SiiController {
   @UseInterceptors(
     FileFieldsInterceptor(
       [{ name: 'certificado', maxCount: 1 }],
-      { storage: memoryStorage() },
+      { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } },
     ),
   )
   async consultarEstadoEnvio(
@@ -249,7 +254,7 @@ export class SiiController {
   @UseInterceptors(
     FileFieldsInterceptor(
       [{ name: 'certificado', maxCount: 1 }],
-      { storage: memoryStorage() },
+      { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } },
     ),
   )
   async consultarEstadoDte(
@@ -278,5 +283,131 @@ export class SiiController {
       rutCertificado,
       passwordCertificado,
     );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // NOTA DE CRÉDITO (tipo 61) / DÉBITO (tipo 56)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Post('nota-credito')
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'certificado', maxCount: 1 },
+        { name: 'caf', maxCount: 1 },
+      ],
+      { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } },
+    ),
+  )
+  async emitirNotaCredito(
+    @Body('datos') datosRaw: string,
+    @UploadedFiles()
+    files: {
+      certificado?: Express.Multer.File[];
+      caf?: Express.Multer.File[];
+    },
+  ) {
+    if (!files?.certificado?.[0]) throw new BadRequestException('Se requiere archivo "certificado" (.pfx)');
+    if (!files?.caf?.[0]) throw new BadRequestException('Se requiere archivo "caf" (.xml)');
+    if (!datosRaw) throw new BadRequestException('Se requiere el campo "datos" JSON');
+
+    let dto: EmitirNotaCreditoDto;
+    try {
+      dto = JSON.parse(datosRaw) as EmitirNotaCreditoDto;
+    } catch {
+      throw new BadRequestException('El campo "datos" no es un JSON válido');
+    }
+
+    return this.siiService.emitirNotaCredito(dto, files.certificado[0], files.caf[0]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GENERAR SOBRE ENVÍO
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Post('sobre-envio')
+  @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async generarSobreEnvio(
+    @Body('datos') datosRaw: string,
+    @UploadedFiles() files: { certificado?: Express.Multer.File[] },
+  ) {
+    if (!files?.certificado?.[0]) throw new BadRequestException('Se requiere "certificado" (.pfx)');
+    if (!datosRaw) throw new BadRequestException('Se requiere el campo "datos" JSON');
+    return this.siiService.generarSobreEnvio(JSON.parse(datosRaw), files.certificado[0]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GENERAR REGISTRO VENTAS DIARIAS (RVD / RCOF)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Post('rvd')
+  @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async generarRvd(
+    @Body('datos') datosRaw: string,
+    @UploadedFiles() files: { certificado?: Express.Multer.File[] },
+  ) {
+    if (!files?.certificado?.[0]) throw new BadRequestException('Se requiere "certificado" (.pfx)');
+    if (!datosRaw) throw new BadRequestException('Se requiere el campo "datos" JSON');
+    return this.siiService.generarRvd(JSON.parse(datosRaw), files.certificado[0]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TIMBRE ELECTRÓNICO (PDF417)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Post('timbre')
+  async obtenerTimbre(@Body('datos') datos: any) {
+    if (!datos) throw new BadRequestException('Se requieren datos para generar el timbre');
+    return this.siiService.obtenerTimbre(datos);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MUESTRA IMPRESA (PDF)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Post('muestra-impresa')
+  async obtenerMuestraImpresa(@Body('datos') datos: any) {
+    if (!datos) throw new BadRequestException('Se requieren datos para el PDF');
+    // SimpleAPI retorna un success con un Base64 que se entregará al cliente.
+    return this.siiService.obtenerMuestraImpresa(datos);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // VALIDADOR DE DTE / SOBRE
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Post('validador')
+  async validarDte(@Body('xml') xmlBase64: string) {
+    if (!xmlBase64) throw new BadRequestException('Se requiere base64 en variable "xml"');
+    return this.siiService.validarDte(xmlBase64);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // OBTENCIÓN DE FOLIOS (CAF)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Post('folios')
+  @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async obtenerFolios(
+    @Body('datos') datosRaw: string,
+    @UploadedFiles() files: { certificado?: Express.Multer.File[] },
+  ) {
+    if (!files?.certificado?.[0]) throw new BadRequestException('Se requiere "certificado" (.pfx)');
+    if (!datosRaw) throw new BadRequestException('Se requiere el campo "datos" JSON');
+    return this.siiService.obtenerFolios(JSON.parse(datosRaw), files.certificado[0]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // OBTENCIÓN DE DATOS DEL NEGOCIO / EMPRESA
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * GET /sii/contribuyente/:rut
+   * Obtiene datos del negocio por RUT (Razón Social, etc.)
+   */
+  @Get('contribuyente/:rut')
+  async obtenerDatosEmpresa(@Param('rut') rut: string) {
+    if (!rut) throw new BadRequestException('Se requiere el RUT');
+    return this.siiService.obtenerDatosEmpresa(rut);
   }
 }

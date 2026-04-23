@@ -1,13 +1,20 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
+import helmet from 'helmet';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
 
-  // Habilitar CORS (útil para POS con frontend separado)
-  app.enableCors();
+  // Seguridad: Cabeceras HTTP seguras
+  app.use(helmet());
+
+  // Habilitar CORS restrictivo (útil para POS con frontend separado)
+  const corsOrigin = process.env.CORS_ORIGIN || '*';
+  app.enableCors({
+    origin: corsOrigin === '*' ? true : corsOrigin.split(','),
+  });
 
   // Validación global de DTOs
   app.useGlobalPipes(

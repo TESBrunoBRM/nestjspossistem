@@ -1,60 +1,129 @@
-# 🧾 NestJS SII — Integración SimpleAPI
+# 🧾 NestJS SII — Integración SimpleAPI (Backend POS)
 
-API REST construida con **NestJS** para emitir documentos tributarios electrónicos (DTE) en Chile, utilizando el servicio **SimpleAPI** como intermediario con el SII.
+Esta API REST construida con **NestJS** actúa como intermediario (Backend) entre el Frontend del Punto de Venta (POS) en Flutter y los servicios del SII (a través de **SimpleAPI**). 
 
----
-
-## 📁 Estructura del Proyecto
-
-```
-myfirstapp/
-├── .env                          ← ⚙️  Variables de entorno (API key, ambiente)
-├── public/                       ← Archivos estáticos servidos en /
-└── src/
-    ├── main.ts                   ← Punto de entrada (puerto, prefijo /api, CORS)
-    ├── app.module.ts             ← Módulo raíz (carga ConfigModule, SiiModule)
-    └── sii/
-        ├── sii.module.ts         ← Módulo SII
-        ├── sii.controller.ts     ← Endpoints REST de la API
-        ├── sii.service.ts        ← Lógica de negocio y llamadas a SimpleAPI
-        ├── dto/
-        │   ├── emitir-boleta.dto.ts   ← Estructura del JSON para boletas
-        │   └── emitir-factura.dto.ts  ← Estructura del JSON para facturas
-        └── interfaces/
-            └── simpleapi-response.interface.ts
-```
+**El propósito de esta API es liberar al Frontend (Flutter) de la lógica compleja.** El frontend no necesita preocuparse por firmar XMLs, manejar contraseñas de certificados digitales, construir "Sobres" o comunicarse directamente con el SII. Flutter solo debe hacer llamadas HTTP REST estándar a esta API, y el backend de NestJS se encarga de todo el trabajo pesado.
 
 ---
 
-## ⚙️ Variables de Entorno — `.env`
+## 🛡️ Seguridad y Autenticación
 
-**Archivo:** `.env` (raíz del proyecto)
+Dado que esta API maneja documentos financieros y contraseñas de certificados digitales, se ha configurado con una **estrategia de seguridad estricta**:
 
-> ⚠️ **Este es el único archivo que debes editar** para conectar con SimpleAPI.
+1. **Autenticación (API Key):** El frontend (Flutter) debe enviar obligatoriamente el header HTTP `x-api-key` en **todas** las peticiones al prefijo `/api/sii`. Si no se envía o es incorrecto, la API responderá con `401 Unauthorized`.
+2. **Protección contra Fuerza Bruta (Rate Limiting):** Limitado a 100 peticiones por minuto por IP.
+3. **CORS Estricto:** Evita que páginas web no autorizadas hagan llamadas a la API desde navegadores.
+4. **Límites de Memoria (Archivos):** Los archivos de certificados y CAFs están limitados a 5MB por petición para evitar ataques de agotamiento de memoria (OOM).
+5. **Helmet:** Cabeceras HTTP seguras activadas por defecto.
+
+---
+
+## ⚙️ Configuración (.env)
+
+El manejo de ambientes (Certificación vs. Producción) y la seguridad se controlan **exclusivamente desde el Backend**. 
+
+Todo se configura en el archivo `.env` en la raíz del proyecto:
 
 | Variable              | Descripción                                    | Valor por defecto              |
 |-----------------------|------------------------------------------------|-------------------------------|
 | `SIMPLEAPI_BASE_URL`  | URL base de la API de SimpleAPI                | `https://api.simpleapi.cl`    |
-| `SIMPLEAPI_KEY`       | **Tu API Key de SimpleAPI** (cámbiala aquí)    | —                             |
+| `SIMPLEAPI_KEY`       | Tu API Key de SimpleAPI                        | —                             |
 | `SIMPLEAPI_AMBIENTE`  | `0` = Certificación (pruebas) · `1` = Producción | `0`                         |
+| `API_KEY_FRONTEND`    | **La clave secreta que Flutter debe enviar en `x-api-key`** | `MiSuperClavePOS2024` |
+| `CORS_ORIGIN`         | Orígenes permitidos (Ej. `http://mipos.com` o `*`) | `*`                           |
 
-### Ejemplo `.env` para producción
+---
 
-```env
-SIMPLEAPI_BASE_URL=https://api.simpleapi.cl
-SIMPLEAPI_KEY=TU-API-KEY-AQUI
-SIMPLEAPI_AMBIENTE=1
-```
+## 🔑 Archivos Necesarios (Certificados y CAFs)
 
-### Ejemplo `.env` para pruebas/certificación
+Para interactuar con el SII a través de esta API, el Frontend debe proporcionar ciertos archivos en formato `multipart/form-data` en algunos endpoints. Aquí te explicamos qué son y por qué se necesitan:
 
-```env
-SIMPLEAPI_BASE_URL=https://api.simpleapi.cl
-SIMPLEAPI_KEY=TU-API-KEY-AQUI
-SIMPLEAPI_AMBIENTE=0
-```
+### 1. Certificado Digital (`.pfx` / `.p12`)
+- **¿Qué es?:** Es la "firma electrónica" de la empresa o representante legal autorizada por el SII. Contiene la clave privada necesaria para firmar matemáticamente los documentos (XML) para que el SII los considere válidos.
+- **¿Cómo se usa?:** El archivo se envía en la petición bajo el campo `certificado`, junto con su contraseña en el JSON. 
+- **¿Para qué endpoints se exige?:** Emisión de Documentos, Notas de Crédito, Generación de Sobres, RVD, Obtención de Folios y Consultas de Estado.
 
-> Las variables son leídas en **`src/sii/sii.service.ts`** (líneas 17-25) a través de `ConfigService`.
+### 2. CAF (Código de Autorización de Folios - `.xml`)
+- **¿Qué es?:** Es un archivo XML entregado por el SII que contiene un rango de folios (números) autorizados para ser usados en un tipo específico de documento, junto con una llave criptográfica. 
+- **Específico por Documento:** **Un CAF de Boletas (tipo 39) no sirve para Facturas (tipo 33)**. Cada tipo de documento tiene su propio CAF.
+- **¿Para qué endpoints se exige?:** Solo para la **Generación de Documentos** (Boleta, Factura, Notas de Crédito/Débito).
+
+---
+
+## 📡 Documentación de Endpoints
+
+Todos los endpoints están bajo el prefijo `/api/sii`. 
+
+### 1. Generar Documento: Boleta y Factura
+Genera y emite el DTE al SII. La API toma el JSON, firma el XML usando el certificado, le asigna el folio usando el CAF, y lo envía a SimpleAPI.
+
+- **Endpoints:** 
+  - `POST /api/sii/boleta` (Tipo 39 y 41)
+  - `POST /api/sii/factura` (Tipo 33, 34, etc.)
+- **Content-Type:** `multipart/form-data`
+- **Requerimientos:**
+  - `datos` (JSON String): Estructura con Emisor, Receptor, Totales y Detalles.
+  - `certificado` (Archivo `.pfx`): Certificado digital.
+  - `caf` (Archivo `.xml`): CAF correspondiente al tipo de documento.
+
+### 2. Nota de Crédito / Débito
+Idéntico a la Factura, pero exige el nodo `Referencias` indicando el documento que está siendo modificado o anulado.
+
+- **Endpoint:** `POST /api/sii/nota-credito`
+- **Requerimientos:** Mismos que factura (`datos`, `certificado`, `caf`).
+
+### 3. Sobre Envío
+Para empaquetar múltiples documentos y enviarlos juntos al SII. (SimpleAPI automatiza esto en muchos casos, pero se provee por si se necesita control manual).
+
+- **Endpoint:** `POST /api/sii/sobre-envio`
+- **Requerimientos:** 
+  - `datos` (JSON String)
+  - `certificado` (Archivo `.pfx`)
+
+### 4. Generar RVD (Registro de Ventas Diarias)
+Obligatorio para quienes emiten Boletas Electrónicas. Resume las ventas del día.
+
+- **Endpoint:** `POST /api/sii/rvd`
+- **Requerimientos:** 
+  - `datos` (JSON String)
+  - `certificado` (Archivo `.pfx`)
+
+### 5. Consultar Estado DTE y Estado de Envío
+Permite saber si el SII aceptó, rechazó o reparó un documento o un sobre completo.
+
+- **Endpoints:**
+  - `POST /api/sii/estado-envio/:trackId`: Consulta por el TrackID del sobre.
+  - `POST /api/sii/estado-dte`: Consulta por Folio y Tipo específico.
+- **Requerimientos:** Requieren el archivo `certificado` (`.pfx`) y credenciales para autenticarse ante el SII.
+
+### 6. Imagen del Timbre y Muestra Impresa
+Generan la visualización del documento. Útil para imprimir el voucher en el POS.
+
+- **Endpoints:**
+  - `POST /api/sii/timbre`: Retorna solo la imagen del código de barras bidimensional (PDF417).
+  - `POST /api/sii/muestra-impresa`: Retorna el PDF completo del documento tamaño carta o voucher.
+- **Requerimientos:** Solo requieren el JSON en el `body` (`datos`). **No requieren archivos.**
+
+### 7. Validador
+Valida la estructura de un XML antes de enviarlo.
+
+- **Endpoint:** `POST /api/sii/validador`
+- **Requerimientos:** Recibe JSON con `xml` en Base64. **No requiere archivos.**
+
+### 8. Obtención de Folios
+Descarga automáticamente un nuevo CAF desde el SII cuando los folios actuales están por acabarse.
+
+- **Endpoint:** `POST /api/sii/folios`
+- **Requerimientos:** `datos` (JSON String) y `certificado` (`.pfx`).
+
+### 9. Obtener Datos del Negocio por RUT (Nuevo)
+Permite al frontend (Flutter) enviar un RUT y obtener la Razón Social, Giro y otros datos del cliente o negocio de forma automática para agilizar el proceso de venta.
+
+- **Endpoint:** `GET /api/sii/contribuyente/:rut`
+- **Requerimientos:** Solo el parámetro de ruta `:rut`. No requiere archivos ni body.
+
+> 💡 **Cómo cambiar el proveedor de Obtención de Datos por RUT:**
+> Por defecto, este endpoint está configurado para consumir `/api/v1/sii/datos_empresa/:rut` en SimpleAPI. Si SimpleAPI no tiene este endpoint habilitado en tu plan, o si prefieres usar una API gratuita chilena (como LibreAPI, apis.net.pe versión Chile, o un scraper), puedes cambiar esto fácilmente modificando la función `obtenerDatosEmpresa(rut)` en el archivo `src/sii/sii.service.ts`. Como Flutter solo llama a `GET /contribuyente/:rut`, **puedes cambiar el proveedor en NestJS sin tener que tocar ni una sola línea de código en la aplicación móvil.**
 
 ---
 
@@ -64,281 +133,10 @@ SIMPLEAPI_AMBIENTE=0
 # Instalar dependencias
 npm install
 
-# Modo desarrollo (con hot-reload)
+# Modo desarrollo
 npm run start:dev
-
-# Modo producción
-npm run build
-npm run start:prod
 ```
 
-El servidor queda disponible en:
-- **API:** `http://localhost:3000/api`
-- **Archivos estáticos:** `http://localhost:3000/`
-
-> El puerto puede cambiarse con la variable de entorno `PORT` en el `.env`.
-
----
-
-## 📡 Endpoints Disponibles
-
-Prefijo global: `/api`  
-Todos los endpoints de SII están bajo `/api/sii`.
-
-### `GET /api/sii/health`
-Verifica la conexión con SimpleAPI y muestra el ambiente configurado.
-
-**Respuesta:**
-```json
-{
-  "status": "ok",
-  "url": "https://api.simpleapi.cl",
-  "ambiente": "certificación"
-}
-```
-
----
-
-### `POST /api/sii/boleta`
-Emite una **Boleta Electrónica (tipo 39)** o **Boleta No Afecta (tipo 41)**.
-
-**Content-Type:** `multipart/form-data`
-
-| Campo         | Tipo       | Descripción                                      |
-|---------------|------------|--------------------------------------------------|
-| `datos`       | string JSON | JSON con la estructura `EmitirBoletaDto`        |
-| `certificado` | archivo `.pfx` | Certificado digital de la empresa           |
-| `caf`         | archivo `.xml` | CAF de folios tipo 39 autorizado por el SII |
-
-**Ejemplo con `curl`:**
-```bash
-curl -X POST http://localhost:3000/api/sii/boleta \
-  -F "datos={\"IdentificacionDTE\":{\"TipoDTE\":39,\"Folio\":1,\"FechaEmision\":\"2024-04-21\"},\"Emisor\":{\"Rut\":\"12345678-9\",\"RazonSocialBoleta\":\"Mi Empresa SpA\",\"GiroBoleta\":\"Venta al por menor\",\"DireccionOrigen\":\"Av. Principal 123\",\"ComunaOrigen\":\"Santiago\"},\"Receptor\":{\"Rut\":\"66666666-6\"},\"Totales\":{\"MontoTotal\":11900,\"MontoNeto\":10000,\"IVA\":1900},\"Detalles\":[{\"Nombre\":\"Producto A\",\"Cantidad\":1,\"Precio\":10000,\"MontoItem\":10000}],\"Certificado\":{\"Rut\":\"12345678-9\",\"Password\":\"mi-pass\"}}" \
-  -F "certificado=@/ruta/certificado.pfx" \
-  -F "caf=@/ruta/caf_39.xml"
-```
-
----
-
-### `POST /api/sii/factura`
-Emite una **Factura Electrónica (tipo 33)** u otros DTE con receptor identificado.
-
-**Content-Type:** `multipart/form-data`
-
-| Campo         | Tipo           | Descripción                                         |
-|---------------|----------------|-----------------------------------------------------|
-| `datos`       | string JSON    | JSON con la estructura `EmitirFacturaDto`           |
-| `certificado` | archivo `.pfx` | Certificado digital de la empresa                   |
-| `caf`         | archivo `.xml` | CAF de folios tipo 33 autorizado por el SII         |
-
----
-
-### `POST /api/sii/estado-envio/:trackId`
-Consulta el estado de un envío al SII usando el **TrackID** devuelto al emitir.
-
-**Content-Type:** `multipart/form-data`
-
-| Campo                 | Tipo           | Descripción                          |
-|-----------------------|----------------|--------------------------------------|
-| `:trackId`            | URL param      | TrackID del envío                    |
-| `rutEmpresa`          | Body string    | RUT empresa emisora (sin puntos)     |
-| `rutCertificado`      | Body string    | RUT del certificado digital          |
-| `passwordCertificado` | Body string    | Contraseña del certificado `.pfx`    |
-| `certificado`         | archivo `.pfx` | Certificado digital                  |
-
----
-
-### `POST /api/sii/estado-dte`
-Consulta el estado de un **DTE individual** directamente en el SII.
-
-**Content-Type:** `multipart/form-data`
-
-| Campo                 | Tipo           | Descripción                                |
-|-----------------------|----------------|--------------------------------------------|
-| `rutEmpresa`          | Query param    | RUT de la empresa emisora                  |
-| `rutReceptor`         | Query param    | RUT del receptor                           |
-| `folio`               | Query param    | Número de folio del DTE                    |
-| `tipoDte`             | Query param    | Tipo de DTE (33, 39, etc.)                 |
-| `total`               | Query param    | Monto total del DTE                        |
-| `fechaDte`            | Query param    | Fecha del DTE (AAAA-MM-DD)                 |
-| `rutCertificado`      | Body string    | RUT del certificado digital                |
-| `passwordCertificado` | Body string    | Contraseña del certificado `.pfx`          |
-| `certificado`         | archivo `.pfx` | Certificado digital                        |
-
----
-
-## 🗂️ Estructura del JSON — Boleta (`EmitirBoletaDto`)
-
-```json
-{
-  "IdentificacionDTE": {
-    "TipoDTE": 39,              // 39=Boleta | 41=Boleta Exenta
-    "Folio": 1,                 // Número de folio autorizado por el SII
-    "FechaEmision": "2024-04-21", // Formato AAAA-MM-DD
-    "IndicadorServicio": 3,     // Opcional: 1,2,3,4
-    "IndicadorMontosNetosBoleta": 2  // Opcional: 2 si el detalle va en montos netos
-  },
-  "Emisor": {
-    "Rut": "12345678-9",        // RUT con guión y dígito verificador
-    "RazonSocialBoleta": "Mi Empresa SpA",
-    "GiroBoleta": "Venta al por menor",
-    "DireccionOrigen": "Av. Principal 123",
-    "ComunaOrigen": "Santiago"
-  },
-  "Receptor": {
-    "Rut": "66666666-6",        // 66.666.666-6 si no hay individualización
-    "RazonSocial": "Cliente",   // Opcional
-    "Direccion": "Calle 456",   // Opcional
-    "Comuna": "Providencia",    // Opcional
-    "Ciudad": "Santiago",       // Opcional
-    "Contacto": "email@ejemplo.com" // Opcional
-  },
-  "Totales": {
-    "MontoTotal": 11900,
-    "MontoNeto": 10000,         // Opcional
-    "IVA": 1900,                // Opcional (19% del neto)
-    "MontoExento": 0            // Opcional
-  },
-  "Detalles": [
-    {
-      "Nombre": "Producto A",
-      "Cantidad": 1,
-      "Precio": 10000,
-      "MontoItem": 10000,       // Precio * Cantidad
-      "IndicadorExento": 0,     // Opcional: 0=no exento, 1=exento
-      "Descuento": 0,           // Opcional
-      "Recargo": 0              // Opcional
-    }
-  ],
-  "Certificado": {
-    "Rut": "12345678-9",        // RUT del certificado digital
-    "Password": "contraseña"    // Contraseña del archivo .pfx
-  }
-}
-```
-
----
-
-## 🗂️ Estructura del JSON — Factura (`EmitirFacturaDto`)
-
-```json
-{
-  "IdentificacionDTE": {
-    "TipoDTE": 33,              // 33=Factura | 34=Exenta | 46=Compra | 52=Despacho | 56=Débito | 61=Crédito
-    "Folio": 1,
-    "FechaEmision": "2024-04-21",
-    "FormaPago": 1,             // Opcional: 1=Contado, 2=Crédito, 3=Sin costo
-    "MedioPago": "EF"          // Opcional: EF, TC, CH, OT, PE, LT, CF
-  },
-  "Emisor": {
-    "Rut": "12345678-9",
-    "RazonSocial": "Mi Empresa SpA",
-    "Giro": "Venta de software",
-    "ActividadEconomica": 620200, // Opcional: código SII
-    "DireccionOrigen": "Av. Principal 123",
-    "ComunaOrigen": "Santiago",
-    "CiudadOrigen": "Santiago", // Opcional
-    "Telefono": ["+56912345678"] // Opcional (array de strings)
-  },
-  "Receptor": {
-    "Rut": "98765432-1",
-    "RazonSocial": "Cliente Empresa Ltda",
-    "Direccion": "Calle Receptor 789",
-    "Comuna": "Las Condes",
-    "Ciudad": "Santiago",       // Opcional
-    "Giro": "Servicios TI",     // Opcional
-    "Contacto": "contacto@empresa.cl", // Opcional
-    "CorreoElectronico": "email@empresa.cl" // Opcional
-  },
-  "Totales": {
-    "MontoTotal": 11900,
-    "MontoNeto": 10000,
-    "IVA": 1900,
-    "TasaIVA": 19,              // Opcional (por defecto 19)
-    "MontoExento": 0            // Opcional
-  },
-  "Detalles": [
-    {
-      "Nombre": "Servicio de desarrollo",
-      "Descripcion": "Detalle adicional", // Opcional
-      "Cantidad": 1,
-      "Precio": 10000,
-      "MontoItem": 10000,
-      "IndicadorExento": 0,     // Opcional
-      "Descuento": 0,           // Opcional
-      "Recargo": 0              // Opcional
-    }
-  ],
-  "Referencias": [              // Opcional (ej: para Notas de Crédito/Débito)
-    {
-      "FechaDocumentoReferencia": "2024-04-20",
-      "TipoDocumento": 33,
-      "FolioReferencia": 5,
-      "CodigoReferencia": 1,    // Opcional: 0=no definido, 1=anular, 2=corregir texto, 3=corregir montos
-      "RazonReferencia": "Anulación" // Opcional
-    }
-  ],
-  "Certificado": {
-    "Rut": "12345678-9",
-    "Password": "contraseña"
-  }
-}
-```
-
----
-
-## 🔑 Archivos Necesarios para Emitir DTEs
-
-Para emitir cualquier DTE necesitas **dos archivos** que debes obtener del SII o de tu representante:
-
-| Archivo          | Extensión | Descripción                                                    |
-|------------------|-----------|----------------------------------------------------------------|
-| **Certificado**  | `.pfx`    | Certificado digital de la empresa (con clave privada)          |
-| **CAF**          | `.xml`    | Código de Autorización de Folios emitido por el SII por tipo de DTE |
-
-> Los CAF son **específicos por tipo de DTE**: el CAF de boletas (tipo 39) no sirve para facturas (tipo 33).
-
----
-
-## 📂 ¿Dónde cambiar cada cosa?
-
-| ¿Qué quieres cambiar?                    | Archivo                           | Detalle                                     |
-|------------------------------------------|-----------------------------------|---------------------------------------------|
-| API Key de SimpleAPI                     | `.env`                            | Variable `SIMPLEAPI_KEY`                    |
-| Ambiente (pruebas/producción)            | `.env`                            | Variable `SIMPLEAPI_AMBIENTE` (`0` o `1`)   |
-| URL base de SimpleAPI                    | `.env`                            | Variable `SIMPLEAPI_BASE_URL`               |
-| Puerto del servidor                      | `.env`                            | Variable `PORT` (defecto: 3000)             |
-| Prefijo de la API (`/api`)               | `src/main.ts`                     | `app.setGlobalPrefix('api')`                |
-| Timeout de requests a SimpleAPI          | `src/sii/sii.service.ts`          | `timeout: 30000` en `axios.create()`        |
-| Validaciones del JSON de boleta          | `src/sii/dto/emitir-boleta.dto.ts`| Decoradores `class-validator`               |
-| Validaciones del JSON de factura         | `src/sii/dto/emitir-factura.dto.ts`| Decoradores `class-validator`              |
-| Estructura del payload enviado a SimpleAPI| `src/sii/sii.service.ts`         | Métodos `buildDocumentoBoleta` / `buildDocumentoFactura` |
-| Agregar nuevos endpoints SII             | `src/sii/sii.controller.ts`       | Agregar métodos con decoradores `@Post`/`@Get` |
-
----
-
-## 🧪 Dependencias Principales
-
-| Paquete                    | Versión   | Uso                                          |
-|----------------------------|-----------|----------------------------------------------|
-| `@nestjs/common`           | ^11.0.1   | Framework base                               |
-| `@nestjs/config`           | ^4.0.4    | Lectura del `.env` con `ConfigService`       |
-| `@nestjs/platform-express` | ^11.0.1   | Soporte Express + Multer para archivos       |
-| `@nestjs/serve-static`     | ^5.0.5    | Servir archivos estáticos desde `/public`    |
-| `axios`                    | ^1.15.1   | Cliente HTTP para llamar a SimpleAPI         |
-| `form-data`                | ^4.0.5    | Construir `multipart/form-data` en el service|
-| `class-validator`          | ^0.15.1   | Validación de DTOs                           |
-| `class-transformer`        | ^0.5.1    | Transformación automática de tipos           |
-| `multer`                   | ^2.1.1    | Manejo de archivos en endpoints              |
-
----
-
-## 🐛 Errores Comunes
-
-| Error                                  | Causa probable                                          | Solución                                    |
-|----------------------------------------|---------------------------------------------------------|---------------------------------------------|
-| `401 Unauthorized`                     | API Key incorrecta o inválida                           | Verificar `SIMPLEAPI_KEY` en `.env`         |
-| `Se requiere el archivo "caf"`         | No se envió el archivo CAF                              | Incluir campo `caf` en el form-data         |
-| `El campo "datos" no es un JSON válido`| JSON malformado en el campo `datos`                     | Validar el JSON antes de enviarlo           |
-| `502 Bad Gateway`                      | SimpleAPI no responde o está caído                      | Verificar `SIMPLEAPI_BASE_URL` y conectividad|
-| Folios agotados                        | El CAF no tiene más folios disponibles                  | Solicitar nuevo CAF al SII                  |
+El servidor queda disponible en los siguientes puntos:
+- **API SII:** `http://localhost:3000/api/sii`
+- **Raíz / Frontend Estático:** `http://localhost:3000/`
