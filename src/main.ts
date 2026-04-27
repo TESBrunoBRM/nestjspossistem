@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 
 async function bootstrap() {
@@ -8,8 +9,20 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Seguridad: Cabeceras HTTP seguras
-  app.use(helmet());
-
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+          styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+          fontSrc: ["'self'", "https://fonts.gstatic.com"],
+          imgSrc: ["'self'", "data:", "https:"],
+          scriptSrcAttr: ["'unsafe-inline'"],
+        },
+      },
+    }),
+  );
   // Habilitar CORS restrictivo (útil para POS con frontend separado)
   const corsOrigin = process.env.CORS_ORIGIN || '*';
   app.enableCors({
@@ -29,10 +42,20 @@ async function bootstrap() {
   // Prefijo global de la API
   app.setGlobalPrefix('api');
 
+  // Configuración de Swagger
+  const config = new DocumentBuilder()
+    .setTitle('API POS System - Integración SII')
+    .setDescription('Documentación de la API para el sistema POS y su integración con el SII a través de SimpleAPI.')
+    .setVersion('1.0')
+    .addApiKey({ type: 'apiKey', name: 'x-api-key', in: 'header' }, 'x-api-key')
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api', app, document);
+
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
   logger.log(`🚀 Servidor corriendo en http://localhost:${port}/api`);
-  logger.log(`📄 SII endpoints: http://localhost:${port}/api/sii`);
+  logger.log(`📄 Documentación Swagger disponible en http://localhost:${port}/api`);
 }
 bootstrap();
 

@@ -50,80 +50,47 @@ Para interactuar con el SII a través de esta API, el Frontend debe proporcionar
 
 ---
 
-## 📡 Documentación de Endpoints
+## 📡 Documentación Interactiva (Swagger)
 
-Todos los endpoints están bajo el prefijo `/api/sii`. 
+La API cuenta con documentación interactiva y detallada gracias a **Swagger**.
+Al levantar el proyecto de forma local, puedes acceder a la interfaz gráfica navegando a:
+👉 **http://localhost:3000/api**
 
-### 1. Generar Documento: Boleta y Factura
-Genera y emite el DTE al SII. La API toma el JSON, firma el XML usando el certificado, le asigna el folio usando el CAF, y lo envía a SimpleAPI.
+Allí encontrarás todos los endpoints organizados por categoría (Boletas, Facturas, Sesión, Consultas, etc.), junto con **ejemplos JSON completos** y detallados para los payloads que debes enviar desde el POS.
 
-- **Endpoints:** 
-  - `POST /api/sii/boleta` (Tipo 39 y 41)
-  - `POST /api/sii/factura` (Tipo 33, 34, etc.)
-- **Content-Type:** `multipart/form-data`
-- **Requerimientos:**
-  - `datos` (JSON String): Estructura con Emisor, Receptor, Totales y Detalles.
-  - `certificado` (Archivo `.pfx`): Certificado digital.
-  - `caf` (Archivo `.xml`): CAF correspondiente al tipo de documento.
+---
 
-### 2. Nota de Crédito / Débito
-Idéntico a la Factura, pero exige el nodo `Referencias` indicando el documento que está siendo modificado o anulado.
+## 🛣️ Endpoints Principales
 
-- **Endpoint:** `POST /api/sii/nota-credito`
-- **Requerimientos:** Mismos que factura (`datos`, `certificado`, `caf`).
+Todos los endpoints están bajo el prefijo `/api/sii`. Debido a la arquitectura limpia, están agrupados semánticamente en las siguientes categorías:
 
-### 3. Sobre Envío
-Para empaquetar múltiples documentos y enviarlos juntos al SII. (SimpleAPI automatiza esto en muchos casos, pero se provee por si se necesita control manual).
+### 1. Boletas (`/api/sii/boletas`)
+- `POST /emitir`: Emite una boleta (Tipo 39 y 41). Recibe `datos`, `certificado` (.pfx) y `caf` (.xml).
 
-- **Endpoint:** `POST /api/sii/sobre-envio`
-- **Requerimientos:** 
-  - `datos` (JSON String)
-  - `certificado` (Archivo `.pfx`)
+### 2. Facturas y Notas (`/api/sii/facturas`)
+- `POST /emitir`: Emite una factura (Tipo 33, 34, etc.).
+- `POST /nota-credito`: Emite una Nota de Crédito o Débito. Exige el nodo de `Referencias` obligatorio.
 
-### 4. Generar RVD (Registro de Ventas Diarias)
-Obligatorio para quienes emiten Boletas Electrónicas. Resume las ventas del día.
+### 3. Utilidades DTE (`/api/sii/utilidades`)
+- `POST /sobre-envio`: Generar Sobre de Envío.
+- `POST /rvd`: Generar Registro de Ventas Diarias.
+- `POST /timbre`: Obtener imagen del Timbre Electrónico (PDF417).
+- `POST /muestra-impresa`: Obtener PDF con la Muestra Impresa.
+- `POST /validador`: Validador de esquemas XML del SII.
+- `POST /folios`: Descargar un nuevo CAF desde el SII (Obtención de Folios).
 
-- **Endpoint:** `POST /api/sii/rvd`
-- **Requerimientos:** 
-  - `datos` (JSON String)
-  - `certificado` (Archivo `.pfx`)
+### 4. Consultas SII (`/api/sii/consultas`)
+- `POST /estado-envio/:trackId`: Consulta el estado de recepción de un sobre por su TrackID.
+- `POST /estado-dte`: Consulta por Folio y Tipo específico si un documento fue aceptado o rechazado.
 
-### 5. Consultar Estado DTE y Estado de Envío
-Permite saber si el SII aceptó, rechazó o reparó un documento o un sobre completo.
+### 5. Sesión (`/api/sii/sesion`)
+- `GET /health`: Verifica la salud y la configuración de conexión con SimpleAPI.
 
-- **Endpoints:**
-  - `POST /api/sii/estado-envio/:trackId`: Consulta por el TrackID del sobre.
-  - `POST /api/sii/estado-dte`: Consulta por Folio y Tipo específico.
-- **Requerimientos:** Requieren el archivo `certificado` (`.pfx`) y credenciales para autenticarse ante el SII.
-
-### 6. Imagen del Timbre y Muestra Impresa
-Generan la visualización del documento. Útil para imprimir el voucher en el POS.
-
-- **Endpoints:**
-  - `POST /api/sii/timbre`: Retorna solo la imagen del código de barras bidimensional (PDF417).
-  - `POST /api/sii/muestra-impresa`: Retorna el PDF completo del documento tamaño carta o voucher.
-- **Requerimientos:** Solo requieren el JSON en el `body` (`datos`). **No requieren archivos.**
-
-### 7. Validador
-Valida la estructura de un XML antes de enviarlo.
-
-- **Endpoint:** `POST /api/sii/validador`
-- **Requerimientos:** Recibe JSON con `xml` en Base64. **No requiere archivos.**
-
-### 8. Obtención de Folios
-Descarga automáticamente un nuevo CAF desde el SII cuando los folios actuales están por acabarse.
-
-- **Endpoint:** `POST /api/sii/folios`
-- **Requerimientos:** `datos` (JSON String) y `certificado` (`.pfx`).
-
-### 9. Obtener Datos del Negocio por RUT (Nuevo)
-Permite al frontend (Flutter) enviar un RUT y obtener la Razón Social, Giro y otros datos del cliente o negocio de forma automática para agilizar el proceso de venta.
-
-- **Endpoint:** `GET /api/sii/contribuyente/:rut`
-- **Requerimientos:** Solo el parámetro de ruta `:rut`. No requiere archivos ni body.
+### 6. Contribuyentes (`/api/sii/contribuyente`)
+- `GET /:rut`: Obtiene Razón Social, Giro y otros datos del cliente de forma automática para agilizar las ventas.
 
 > 💡 **Cómo cambiar el proveedor de Obtención de Datos por RUT:**
-> Por defecto, este endpoint está configurado para consumir `/api/v1/sii/datos_empresa/:rut` en SimpleAPI. Si SimpleAPI no tiene este endpoint habilitado en tu plan, o si prefieres usar una API gratuita chilena (como LibreAPI, apis.net.pe versión Chile, o un scraper), puedes cambiar esto fácilmente modificando la función `obtenerDatosEmpresa(rut)` en el archivo `src/sii/sii.service.ts`. Como Flutter solo llama a `GET /contribuyente/:rut`, **puedes cambiar el proveedor en NestJS sin tener que tocar ni una sola línea de código en la aplicación móvil.**
+> Por defecto, este endpoint está configurado para consumir `/api/v1/sii/datos_empresa/:rut` en SimpleAPI. Si prefieres usar una API gratuita chilena o un scraper, puedes cambiar esto fácilmente modificando la función `obtenerDatosEmpresa(rut)` en el archivo `src/sii/sii.service.ts` sin necesidad de alterar la lógica de la App en Flutter.
 
 ---
 
