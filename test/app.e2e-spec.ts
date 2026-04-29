@@ -8,6 +8,12 @@ describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
 
   beforeEach(async () => {
+    process.env.API_KEY = 'test-api-key';
+    process.env.API_KEY_FRONTEND = 'frontend-api-key';
+    process.env.SIMPLE_API_URL = 'http://localhost';
+    process.env.SIMPLEAPI_BASE_URL = 'http://localhost';
+    process.env.SIMPLEAPI_KEY = 'simple-api-key';
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();

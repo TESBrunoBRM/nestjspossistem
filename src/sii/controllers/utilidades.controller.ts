@@ -11,7 +11,9 @@ import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiKeyGuard } from '../../auth/api-key.guard';
 import { SiiService } from '../sii.service';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
+import { ParseJsonPipe } from '../../common/pipes/parse-json.pipe';
+import { SimpleApiResponseDto } from '../dto/simple-api-response.dto';
 
 @ApiTags('Utilidades DTE')
 @UseGuards(ApiKeyGuard)
@@ -23,28 +25,28 @@ export class UtilidadesController {
   @ApiOperation({ summary: 'Generar Sobre de Envío' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: { properties: { datos: { type: 'string' }, certificado: { type: 'string', format: 'binary' } } } })
+  @ApiResponse({ status: 201, description: 'Sobre generado exitosamente.', type: SimpleApiResponseDto })
   @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async generarSobreEnvio(
-    @Body('datos') datosRaw: string,
+    @Body('datos', new ParseJsonPipe(Object, { strict: false })) datos: any,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
     if (!files?.certificado?.[0]) throw new BadRequestException('Se requiere "certificado" (.pfx)');
-    if (!datosRaw) throw new BadRequestException('Se requiere el campo "datos" JSON');
-    return this.siiService.generarSobreEnvio(JSON.parse(datosRaw), files.certificado[0]);
+    return this.siiService.generarSobreEnvio(datos, files.certificado[0]);
   }
 
   @Post('rvd')
   @ApiOperation({ summary: 'Generar Registro de Ventas Diarias (RVD)' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: { properties: { datos: { type: 'string' }, certificado: { type: 'string', format: 'binary' } } } })
+  @ApiResponse({ status: 201, description: 'RVD generado exitosamente.', type: SimpleApiResponseDto })
   @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async generarRvd(
-    @Body('datos') datosRaw: string,
+    @Body('datos', new ParseJsonPipe(Object, { strict: false })) datos: any,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
     if (!files?.certificado?.[0]) throw new BadRequestException('Se requiere "certificado" (.pfx)');
-    if (!datosRaw) throw new BadRequestException('Se requiere el campo "datos" JSON');
-    return this.siiService.generarRvd(JSON.parse(datosRaw), files.certificado[0]);
+    return this.siiService.generarRvd(datos, files.certificado[0]);
   }
 
   @Post('timbre')
@@ -72,13 +74,13 @@ export class UtilidadesController {
   @ApiOperation({ summary: 'Obtener Folios (CAF) desde el SII' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: { properties: { datos: { type: 'string' }, certificado: { type: 'string', format: 'binary' } } } })
+  @ApiResponse({ status: 201, description: 'Folios obtenidos exitosamente.', type: SimpleApiResponseDto })
   @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async obtenerFolios(
-    @Body('datos') datosRaw: string,
+    @Body('datos', new ParseJsonPipe(Object, { strict: false })) datos: any,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
     if (!files?.certificado?.[0]) throw new BadRequestException('Se requiere "certificado" (.pfx)');
-    if (!datosRaw) throw new BadRequestException('Se requiere el campo "datos" JSON');
-    return this.siiService.obtenerFolios(JSON.parse(datosRaw), files.certificado[0]);
+    return this.siiService.obtenerFolios(datos, files.certificado[0]);
   }
 }

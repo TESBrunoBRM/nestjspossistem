@@ -13,6 +13,8 @@ import { memoryStorage } from 'multer';
 import { ApiKeyGuard } from '../../auth/api-key.guard';
 import { SiiService } from '../sii.service';
 import { EmitirBoletaDto } from '../dto/emitir-boleta.dto';
+import { ParseJsonPipe } from '../../common/pipes/parse-json.pipe';
+import { SimpleApiResponseDto } from '../dto/simple-api-response.dto';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('Boletas')
@@ -47,7 +49,7 @@ export class BoletaController {
       },
     },
   })
-  @ApiResponse({ status: 201, description: 'Boleta emitida exitosamente.' })
+  @ApiResponse({ status: 201, description: 'Boleta emitida exitosamente.', type: SimpleApiResponseDto })
   @ApiResponse({ status: 400, description: 'Datos o archivos faltantes/inválidos.' })
   @UseInterceptors(
     FileFieldsInterceptor(
@@ -59,7 +61,7 @@ export class BoletaController {
     ),
   )
   async emitirBoleta(
-    @Body('datos') datosRaw: string,
+    @Body('datos', new ParseJsonPipe(EmitirBoletaDto)) dtoRaw: any,
     @UploadedFiles()
     files: {
       certificado?: Express.Multer.File[];
@@ -72,17 +74,8 @@ export class BoletaController {
     if (!files?.caf?.[0]) {
       throw new BadRequestException('Se requiere el archivo "caf" (.xml) con los folios');
     }
-    if (!datosRaw) {
-      throw new BadRequestException('Se requiere el campo "datos" con el JSON de la boleta');
-    }
 
-    let dto: EmitirBoletaDto;
-    try {
-      dto = JSON.parse(datosRaw) as EmitirBoletaDto;
-    } catch {
-      throw new BadRequestException('El campo "datos" no es un JSON válido');
-    }
-
+    const dto = dtoRaw as EmitirBoletaDto;
     this.logger.log(`[POST /sii/boletas/emitir] Folio=${dto.IdentificacionDTE?.Folio}`);
 
     return this.siiService.emitirBoleta(dto, files.certificado[0], files.caf[0]);

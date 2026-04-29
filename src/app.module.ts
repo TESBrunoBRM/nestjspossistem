@@ -7,11 +7,12 @@ import { AppService } from './app.service';
 import { SiiModule } from './sii/sii.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { validateEnv } from './config/env.validation';
 
 @Module({
   imports: [
     // Variables de entorno (.env) disponibles globalmente
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
     // Previsualización HTML en http://localhost:3000/
     ServeStaticModule.forRoot({
       rootPath: join(__dirname, '..', 'public'),
