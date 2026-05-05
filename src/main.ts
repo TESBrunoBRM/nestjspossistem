@@ -7,6 +7,7 @@ import helmet from 'helmet';
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
+  const isProduction = process.env.NODE_ENV === 'production';
 
   // Seguridad: Cabeceras HTTP seguras
   app.use(
@@ -23,10 +24,20 @@ async function bootstrap() {
       },
     }),
   );
-  // Habilitar CORS restrictivo (útil para POS con frontend separado)
+
+  // Habilitar CORS — restrictivo en producción
   const corsOrigin = process.env.CORS_ORIGIN || '*';
+  if (isProduction && corsOrigin === '*') {
+    logger.warn(
+      '⚠️  CORS_ORIGIN está configurado como "*" en producción. ' +
+      'Se recomienda especificar orígenes explícitos.',
+    );
+  }
   app.enableCors({
-    origin: corsOrigin === '*' ? true : corsOrigin.split(','),
+    origin: corsOrigin === '*' ? true : corsOrigin.split(',').map((o) => o.trim()),
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'x-api-key', 'Authorization'],
+    credentials: true,
   });
 
   // Validación global de DTOs
@@ -42,7 +53,7 @@ async function bootstrap() {
   // Prefijo global de la API
   app.setGlobalPrefix('api');
 
-  // Configuración de Swagger
+  // Configuración de Swagger (disponible en /api para referencia del equipo)
   const config = new DocumentBuilder()
     .setTitle('API POS System - Integración SII')
     .setDescription('Documentación de la API para el sistema POS y su integración con el SII a través de SimpleAPI.')
@@ -52,10 +63,12 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, document);
 
+  if (isProduction) {
+    logger.warn('⚠️  Swagger está expuesto en producción. Considere protegerlo con autenticación adicional.');
+  }
+
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
   logger.log(`🚀 Servidor corriendo en http://localhost:${port}/api`);
-  logger.log(`📄 Documentación Swagger disponible en http://localhost:${port}/api`);
 }
 bootstrap();
-

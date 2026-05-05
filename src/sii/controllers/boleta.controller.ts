@@ -4,7 +4,6 @@ import {
   Body,
   UploadedFiles,
   UseInterceptors,
-  BadRequestException,
   Logger,
   UseGuards,
 } from '@nestjs/common';
@@ -15,6 +14,7 @@ import { SiiService } from '../sii.service';
 import { EmitirBoletaDto } from '../dto/emitir-boleta.dto';
 import { ParseJsonPipe } from '../../common/pipes/parse-json.pipe';
 import { SimpleApiResponseDto } from '../dto/simple-api-response.dto';
+import { validateCertificadoFile, validateCafFile } from '../../common/utils/file-validation.util';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('Boletas')
@@ -61,21 +61,16 @@ export class BoletaController {
     ),
   )
   async emitirBoleta(
-    @Body('datos', new ParseJsonPipe(EmitirBoletaDto)) dtoRaw: any,
+    @Body('datos', new ParseJsonPipe(EmitirBoletaDto)) dto: EmitirBoletaDto,
     @UploadedFiles()
     files: {
       certificado?: Express.Multer.File[];
       caf?: Express.Multer.File[];
     },
   ) {
-    if (!files?.certificado?.[0]) {
-      throw new BadRequestException('Se requiere el archivo "certificado" (.pfx)');
-    }
-    if (!files?.caf?.[0]) {
-      throw new BadRequestException('Se requiere el archivo "caf" (.xml) con los folios');
-    }
+    validateCertificadoFile(files?.certificado?.[0]);
+    validateCafFile(files?.caf?.[0]);
 
-    const dto = dtoRaw as EmitirBoletaDto;
     this.logger.log(`[POST /sii/boletas/emitir] Folio=${dto.IdentificacionDTE?.Folio}`);
 
     return this.siiService.emitirBoleta(dto, files.certificado[0], files.caf[0]);

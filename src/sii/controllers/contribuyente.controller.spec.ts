@@ -40,7 +40,7 @@ describe('ContribuyenteController', () => {
   });
 
   describe('obtenerDatosEmpresa', () => {
-    it('debería retornar datos del contribuyente', async () => {
+    it('debería retornar datos del contribuyente con RUT válido (sin puntos)', async () => {
       const mockRut = '76123456-7';
       const mockResponse = { razonSocial: 'Empresa Test' };
       mockSiiService.obtenerDatosEmpresa.mockResolvedValue(mockResponse);
@@ -51,8 +51,34 @@ describe('ContribuyenteController', () => {
       expect(service.obtenerDatosEmpresa).toHaveBeenCalledWith(mockRut);
     });
 
-    it('debería lanzar BadRequestException si no se envía rut (aunque el param suele obligarlo)', async () => {
+    it('debería aceptar RUT con puntos', async () => {
+      const mockRut = '76.123.456-7';
+      const mockResponse = { razonSocial: 'Empresa Test' };
+      mockSiiService.obtenerDatosEmpresa.mockResolvedValue(mockResponse);
+
+      const result = await controller.obtenerDatosEmpresa(mockRut);
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('debería aceptar RUT con verificador K', async () => {
+      const mockRut = '76123456-K';
+      const mockResponse = { razonSocial: 'Empresa Test' };
+      mockSiiService.obtenerDatosEmpresa.mockResolvedValue(mockResponse);
+
+      const result = await controller.obtenerDatosEmpresa(mockRut);
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('debería lanzar BadRequestException si RUT está vacío', async () => {
       await expect(controller.obtenerDatosEmpresa('')).rejects.toThrow(BadRequestException);
+    });
+
+    it('debería lanzar BadRequestException si RUT tiene formato inválido', async () => {
+      await expect(controller.obtenerDatosEmpresa('abc123')).rejects.toThrow(BadRequestException);
+    });
+
+    it('debería lanzar BadRequestException si RUT no tiene guión', async () => {
+      await expect(controller.obtenerDatosEmpresa('76123456')).rejects.toThrow(BadRequestException);
     });
   });
 });

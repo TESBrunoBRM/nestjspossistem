@@ -27,7 +27,7 @@ describe('SiiService', () => {
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn((key: string, defaultValue: any) => {
+            get: jest.fn((key: string, defaultValue?: unknown) => {
               if (key === 'SIMPLEAPI_BASE_URL') return 'https://api.test.cl';
               if (key === 'SIMPLEAPI_KEY') return 'test-key';
               if (key === 'SIMPLEAPI_AMBIENTE') return 0;
@@ -70,7 +70,7 @@ describe('SiiService', () => {
       expect(result).toEqual(mockResponse.data);
     });
 
-    it('debe lanzar HttpException si la API de SimpleAPI falla', async () => {
+    it('debe lanzar HttpException con mensaje sanitizado si la API falla', async () => {
       const rut = 'error-rut';
       const mockError = {
         response: { status: 404, data: 'Contribuyente no encontrado' }
@@ -80,7 +80,35 @@ describe('SiiService', () => {
       mockAxiosInstance.get.mockRejectedValue(mockError);
 
       await expect(service.obtenerDatosEmpresa(rut)).rejects.toThrow(HttpException);
-      await expect(service.obtenerDatosEmpresa(rut)).rejects.toThrow('Error al comunicarse con SimpleAPI');
+
+      try {
+        await service.obtenerDatosEmpresa(rut);
+      } catch (e) {
+        const exception = e as HttpException;
+        const response = exception.getResponse() as Record<string, unknown>;
+        // Verificar que NO se filtra el detalle de SimpleAPI
+        expect(response.message).toBe('Error al procesar la solicitud con SimpleAPI.');
+        // Verificar que incluye un errorId para trazabilidad
+        expect(response.errorId).toBeDefined();
+        expect(typeof response.errorId).toBe('string');
+      }
+    });
+  });
+
+  describe('healthCheck', () => {
+    it('debe retornar status ok cuando SimpleAPI responde', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: {} });
+
+      const result = await service.healthCheck();
+      expect(result.status).toBe('ok');
+      expect(result.ambiente).toBe('certificación');
+    });
+
+    it('debe retornar status unreachable cuando SimpleAPI no responde', async () => {
+      mockAxiosInstance.get.mockRejectedValue(new Error('Connection refused'));
+
+      const result = await service.healthCheck();
+      expect(result.status).toBe('unreachable');
     });
   });
 });

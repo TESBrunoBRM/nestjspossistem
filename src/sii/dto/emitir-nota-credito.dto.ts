@@ -6,9 +6,9 @@ import {
   ReceptorFacturaDto,
   TotalesFacturaDto,
   ItemFacturaDto,
-  ReferenciaDto,
 } from './emitir-factura.dto';
 import { CertificadoDto } from './emitir-boleta.dto';
+import { ReferenciaNcDto } from './referencia-nc.dto';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class IdentificacionDTENotaCreditoDto extends IdentificacionDTEFacturaDto {
@@ -45,14 +45,17 @@ export class EmitirNotaCreditoDto {
   @Type(() => ItemFacturaDto)
   Detalles: ItemFacturaDto[];
 
-  // ⚠️ La diferencia principal con una boleta o factura normal, es que en una
-  // Nota de crédito o débito las RUTAS DE REFERENCIA son OBLIGATORIAS para anular o modificar.
-  @ApiProperty({ type: [ReferenciaDto], description: 'Referencias a los documentos que modifica o anula (OBLIGATORIO para NC/ND)' })
+  // ⚠️ Para NC/ND las referencias son OBLIGATORIAS y deben incluir
+  // FolioReferencia y CodigoReferencia (campos obligatorios en ReferenciaNcDto)
+  @ApiProperty({
+    type: [ReferenciaNcDto],
+    description: 'Referencias al documento que modifica o anula (OBLIGATORIO para NC/ND, con FolioReferencia y CodigoReferencia obligatorios)',
+  })
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
-  @Type(() => ReferenciaDto)
-  Referencias: ReferenciaDto[];
+  @Type(() => ReferenciaNcDto)
+  Referencias: ReferenciaNcDto[];
 
   @ApiProperty({ type: CertificadoDto })
   @ValidateNested()

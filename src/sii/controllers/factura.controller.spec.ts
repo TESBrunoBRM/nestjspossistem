@@ -15,7 +15,15 @@ describe('FacturaController', () => {
     emitirNotaCredito: jest.fn(),
   };
 
-  const mockFile = { buffer: Buffer.from('mock') } as Express.Multer.File;
+  const mockCertFile = {
+    buffer: Buffer.from('mock'),
+    originalname: 'cert.pfx',
+  } as Express.Multer.File;
+
+  const mockCafFile = {
+    buffer: Buffer.from('mock'),
+    originalname: 'folios.xml',
+  } as Express.Multer.File;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -45,40 +53,67 @@ describe('FacturaController', () => {
   });
 
   describe('emitirFactura', () => {
-    it('debería emitir una factura', async () => {
-      const mockDto: Partial<EmitirFacturaDto> = { IdentificacionDTE: { Folio: 100, TipoDTE: 33, FechaEmision: '2023-01-01' } };
+    it('debería emitir una factura con DTO validado por ParseJsonPipe', async () => {
+      const mockDto = {
+        IdentificacionDTE: { Folio: 100, TipoDTE: 33, FechaEmision: '2023-01-01' },
+      } as EmitirFacturaDto;
       const mockResponse = { trackId: '456' };
       mockSiiService.emitirFactura.mockResolvedValue(mockResponse);
 
-      const result = await controller.emitirFactura(JSON.stringify(mockDto), {
-        certificado: [mockFile],
-        caf: [mockFile],
+      const result = await controller.emitirFactura(mockDto, {
+        certificado: [mockCertFile],
+        caf: [mockCafFile],
       });
 
       expect(result).toEqual(mockResponse);
-      expect(service.emitirFactura).toHaveBeenCalledWith(mockDto, mockFile, mockFile);
+      expect(service.emitirFactura).toHaveBeenCalledWith(mockDto, mockCertFile, mockCafFile);
     });
 
     it('debería lanzar BadRequestException si falta un archivo', async () => {
+      const mockDto = {} as EmitirFacturaDto;
       await expect(
-        controller.emitirFactura('{}', { certificado: [mockFile] })
+        controller.emitirFactura(mockDto, { certificado: [mockCertFile] }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('debería lanzar BadRequestException si el certificado tiene extensión inválida', async () => {
+      const badFile = {
+        buffer: Buffer.from('mock'),
+        originalname: 'cert.txt',
+      } as Express.Multer.File;
+      const mockDto = {} as EmitirFacturaDto;
+
+      await expect(
+        controller.emitirFactura(mockDto, {
+          certificado: [badFile],
+          caf: [mockCafFile],
+        }),
       ).rejects.toThrow(BadRequestException);
     });
   });
 
   describe('emitirNotaCredito', () => {
-    it('debería emitir una nota de crédito', async () => {
-      const mockDto: Partial<EmitirNotaCreditoDto> = { IdentificacionDTE: { Folio: 200, TipoDTE: 61, FechaEmision: '2023-01-01' } };
+    it('debería emitir una nota de crédito con DTO validado por ParseJsonPipe', async () => {
+      const mockDto = {
+        IdentificacionDTE: { Folio: 200, TipoDTE: 61, FechaEmision: '2023-01-01' },
+      } as EmitirNotaCreditoDto;
       const mockResponse = { trackId: '789' };
       mockSiiService.emitirNotaCredito.mockResolvedValue(mockResponse);
 
-      const result = await controller.emitirNotaCredito(JSON.stringify(mockDto), {
-        certificado: [mockFile],
-        caf: [mockFile],
+      const result = await controller.emitirNotaCredito(mockDto, {
+        certificado: [mockCertFile],
+        caf: [mockCafFile],
       });
 
       expect(result).toEqual(mockResponse);
-      expect(service.emitirNotaCredito).toHaveBeenCalledWith(mockDto, mockFile, mockFile);
+      expect(service.emitirNotaCredito).toHaveBeenCalledWith(mockDto, mockCertFile, mockCafFile);
+    });
+
+    it('debería lanzar BadRequestException si falta certificado', async () => {
+      const mockDto = {} as EmitirNotaCreditoDto;
+      await expect(
+        controller.emitirNotaCredito(mockDto, { caf: [mockCafFile] }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });

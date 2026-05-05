@@ -5,6 +5,13 @@ import FormData from 'form-data';
 import { EmitirBoletaDto } from './dto/emitir-boleta.dto';
 import { EmitirFacturaDto } from './dto/emitir-factura.dto';
 import { EmitirNotaCreditoDto } from './dto/emitir-nota-credito.dto';
+import { RvdRequestDto } from './dto/utilidades-rvd.dto';
+import { SobreEnvioRequestDto } from './dto/utilidades-sobre-envio.dto';
+import { TimbreRequestDto } from './dto/utilidades-timbre.dto';
+import { MuestraImpresaRequestDto } from './dto/utilidades-muestra-impresa.dto';
+import { FoliosRequestDto } from './dto/utilidades-folios.dto';
+import type { SimpleApiResponse } from './interfaces/simpleapi-response.interface';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class SiiService {
@@ -54,7 +61,7 @@ export class SiiService {
     dto: EmitirBoletaDto,
     certificadoFile: Express.Multer.File,
     cafFile: Express.Multer.File,
-  ): Promise<unknown> {
+  ): Promise<SimpleApiResponse> {
     this.logger.log(`Emitiendo boleta folio=${dto.IdentificacionDTE.Folio}`);
 
     // Construir el payload JSON para el Documento
@@ -90,7 +97,7 @@ export class SiiService {
     dto: EmitirFacturaDto,
     certificadoFile: Express.Multer.File,
     cafFile: Express.Multer.File,
-  ): Promise<unknown> {
+  ): Promise<SimpleApiResponse> {
     this.logger.log(`Emitiendo factura folio=${dto.IdentificacionDTE.Folio}`);
 
     const documento = this.buildDocumentoFactura(dto);
@@ -122,7 +129,7 @@ export class SiiService {
     certificadoFile: Express.Multer.File,
     rutCertificado: string,
     passwordCertificado: string,
-  ): Promise<unknown> {
+  ): Promise<SimpleApiResponse> {
     this.logger.log(`Consultando estado trackId=${trackId}`);
 
     const jsonData = {
@@ -156,7 +163,7 @@ export class SiiService {
     certificadoFile: Express.Multer.File,
     rutCertificado: string,
     passwordCertificado: string,
-  ): Promise<unknown> {
+  ): Promise<SimpleApiResponse> {
     this.logger.log(
       `Consultando estado DTE folio=${folio} tipo=${tipoDte}`,
     );
@@ -217,7 +224,7 @@ export class SiiService {
     dto: EmitirNotaCreditoDto,
     certificadoFile: Express.Multer.File,
     cafFile: Express.Multer.File,
-  ): Promise<unknown> {
+  ): Promise<SimpleApiResponse> {
     this.logger.log(`Emitiendo Nota de Crédito folio=${dto.IdentificacionDTE.Folio}`);
 
     // Nota de crédito usa la misma estructura base de documento que la factura
@@ -243,7 +250,10 @@ export class SiiService {
    * Algunas versiones de SimpleAPI realizan esto automáticamente, 
    * pero se expone en caso de usarse el endpoint explícito.
    */
-  async generarSobreEnvio(datosEnvio: any, certificadoFile: Express.Multer.File): Promise<unknown> {
+  async generarSobreEnvio(
+    datosEnvio: SobreEnvioRequestDto,
+    certificadoFile: Express.Multer.File,
+  ): Promise<SimpleApiResponse> {
     this.logger.log('Generando sobre de envío SII');
     const form = new FormData();
     form.append('datos', JSON.stringify(datosEnvio));
@@ -257,7 +267,10 @@ export class SiiService {
   /**
    * Genera el Registro de Ventas Diarias (RVD / RCOF).
    */
-  async generarRvd(datosRvd: any, certificadoFile: Express.Multer.File): Promise<unknown> {
+  async generarRvd(
+    datosRvd: RvdRequestDto,
+    certificadoFile: Express.Multer.File,
+  ): Promise<SimpleApiResponse> {
     this.logger.log('Generando RVD');
     const form = new FormData();
     form.append('datos', JSON.stringify(datosRvd));
@@ -271,7 +284,7 @@ export class SiiService {
   /**
    * Obtiene la imagen del timbre (PDF417) de un documento específico.
    */
-  async obtenerTimbre(datosTimbre: any): Promise<unknown> {
+  async obtenerTimbre(datosTimbre: TimbreRequestDto): Promise<SimpleApiResponse> {
     this.logger.log('Solicitando imagen del timbre TED');
     const form = new FormData();
     form.append('datos', JSON.stringify(datosTimbre));
@@ -281,7 +294,7 @@ export class SiiService {
   /**
    * Obtiene la muestra impresa (PDF) de un DTE.
    */
-  async obtenerMuestraImpresa(datosImpresion: any): Promise<unknown> {
+  async obtenerMuestraImpresa(datosImpresion: MuestraImpresaRequestDto): Promise<SimpleApiResponse> {
     this.logger.log('Solicitando generación de PDF Muestra Impresa');
     const form = new FormData();
     form.append('datos', JSON.stringify(datosImpresion));
@@ -291,7 +304,7 @@ export class SiiService {
   /**
    * Validador de esquema de DTE o Sobre.
    */
-  async validarDte(xmlBase64: string): Promise<unknown> {
+  async validarDte(xmlBase64: string): Promise<SimpleApiResponse> {
     this.logger.log('Validando estructura de XML DTE');
     const form = new FormData();
     form.append('xml', xmlBase64);
@@ -301,7 +314,10 @@ export class SiiService {
   /**
    * Obtención de Folios (CAF) directo desde el SII a través de SimpleAPI.
    */
-  async obtenerFolios(datosFolios: any, certificadoFile: Express.Multer.File): Promise<unknown> {
+  async obtenerFolios(
+    datosFolios: FoliosRequestDto,
+    certificadoFile: Express.Multer.File,
+  ): Promise<SimpleApiResponse> {
     this.logger.log('Solicitando descarga de Folios CAF al SII');
     const form = new FormData();
     form.append('datos', JSON.stringify(datosFolios));
@@ -316,7 +332,7 @@ export class SiiService {
    * Obtener datos de empresa o contribuyente por RUT.
    * Utiliza SimpleAPI para obtener la Razón Social y otros datos.
    */
-  async obtenerDatosEmpresa(rut: string): Promise<unknown> {
+  async obtenerDatosEmpresa(rut: string): Promise<SimpleApiResponse> {
     this.logger.log(`Obteniendo datos de empresa para RUT: ${rut}`);
     return this.callSimpleApiGet(`/api/v1/sii/datos_empresa/${rut}`);
   }
@@ -326,7 +342,7 @@ export class SiiService {
   // ─────────────────────────────────────────────────────────────────────────
 
   /** Construye el JSON de Documento para una Boleta */
-  private buildDocumentoBoleta(dto: EmitirBoletaDto): object {
+  private buildDocumentoBoleta(dto: EmitirBoletaDto): Record<string, unknown> {
     return {
       Documento: {
         Encabezado: {
@@ -399,7 +415,7 @@ export class SiiService {
   }
 
   /** Construye el JSON de Documento para una Factura */
-  private buildDocumentoFactura(dto: EmitirFacturaDto): object {
+  private buildDocumentoFactura(dto: EmitirFacturaDto): Record<string, unknown> {
     return {
       Documento: {
         Encabezado: {
@@ -492,7 +508,7 @@ export class SiiService {
   }
 
   /** Ejecuta la llamada a SimpleAPI con FormData (POST) */
-  private async callSimpleApi(endpoint: string, form: FormData): Promise<unknown> {
+  private async callSimpleApi(endpoint: string, form: FormData): Promise<SimpleApiResponse> {
     try {
       const response = await this.http.post(endpoint, form, {
         headers: {
@@ -500,42 +516,81 @@ export class SiiService {
           Authorization: this.apiKey,
         },
       });
-      return response.data;
+      return response.data as SimpleApiResponse;
     } catch (error: unknown) {
       this.handleApiError(error, endpoint);
     }
   }
 
   /** Ejecuta una llamada GET a SimpleAPI */
-  private async callSimpleApiGet(endpoint: string, params?: any): Promise<unknown> {
+  private async callSimpleApiGet(
+    endpoint: string,
+    params?: Record<string, string | number>,
+  ): Promise<SimpleApiResponse> {
     try {
       const response = await this.http.get(endpoint, {
         params,
         headers: { Authorization: this.apiKey },
       });
-      return response.data;
+      return response.data as SimpleApiResponse;
     } catch (error: unknown) {
       this.handleApiError(error, endpoint);
     }
   }
 
-  /** Manejo centralizado de errores de Axios */
+  /** Manejo centralizado de errores de Axios — sanitiza detalles internos */
   private handleApiError(error: unknown, endpoint: string): never {
+    const errorId = randomUUID();
     const axiosError = error as {
       response?: { data: unknown; status: number };
       message?: string;
     };
+
+    // Log interno completo para depuración (sin passwords)
+    const sanitizedData = this.redactSensitiveFields(axiosError?.response?.data);
     this.logger.error(
-      `Error llamando SimpleAPI [${endpoint}]`,
-      axiosError?.response?.data ?? axiosError?.message,
+      `[errorId=${errorId}] Error en SimpleAPI [${endpoint}]`,
+      sanitizedData ?? axiosError?.message,
     );
+
+    // Respuesta pública: NO filtrar datos internos de SimpleAPI
+    const status = axiosError?.response?.status ?? HttpStatus.BAD_GATEWAY;
+    const publicMessage =
+      status >= 500
+        ? 'Error interno del servicio SimpleAPI. Intente nuevamente.'
+        : 'Error al procesar la solicitud con SimpleAPI.';
+
     throw new HttpException(
       {
-        message: 'Error al comunicarse con SimpleAPI',
-        details: axiosError?.response?.data ?? axiosError?.message,
+        message: publicMessage,
+        errorId,
         endpoint,
       },
-      axiosError?.response?.status ?? HttpStatus.BAD_GATEWAY,
+      status,
     );
+  }
+
+  /**
+   * Redacta campos sensibles (passwords, claves) de un objeto
+   * para logging seguro. No modifica el objeto original.
+   */
+  private redactSensitiveFields(data: unknown): unknown {
+    if (!data || typeof data !== 'object') return data;
+
+    const sensitiveKeys = ['password', 'Password', 'contraseña', 'apikey', 'Authorization'];
+    const cloned = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
+
+    const redact = (obj: Record<string, unknown>) => {
+      for (const key of Object.keys(obj)) {
+        if (sensitiveKeys.some((sk) => key.toLowerCase().includes(sk.toLowerCase()))) {
+          obj[key] = '[REDACTED]';
+        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+          redact(obj[key] as Record<string, unknown>);
+        }
+      }
+    };
+
+    redact(cloned);
+    return cloned;
   }
 }
