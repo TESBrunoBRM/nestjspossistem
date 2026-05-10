@@ -28,6 +28,10 @@ class EnvironmentVariables {
 
   @IsString()
   SIMPLEAPI_BASE_URL: string;
+
+  @IsString()
+  @IsOptional()
+  SIMPLEAPI_FOLIOS_BASE_URL?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {

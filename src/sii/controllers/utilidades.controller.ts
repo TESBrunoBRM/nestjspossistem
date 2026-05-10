@@ -20,7 +20,15 @@ import { TimbreRequestDto } from '../dto/utilidades-timbre.dto';
 import { MuestraImpresaRequestDto } from '../dto/utilidades-muestra-impresa.dto';
 import { FoliosRequestDto } from '../dto/utilidades-folios.dto';
 import { validateCertificadoFile } from '../../common/utils/file-validation.util';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiSecurity } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiConsumes,
+  ApiBody,
+  ApiResponse,
+  ApiSecurity,
+  ApiProduces,
+} from '@nestjs/swagger';
 
 @ApiTags('Utilidades DTE')
 @ApiSecurity('x-api-key')
@@ -38,12 +46,14 @@ export class UtilidadesController {
   @ApiResponse({ status: 201, description: 'Sobre generado exitosamente.', type: SimpleApiResponseDto })
   @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async generarSobreEnvio(
-    @Body('datos', new ParseJsonPipe(SobreEnvioRequestDto)) datos: SobreEnvioRequestDto,
+    @Body('datos', new ParseJsonPipe(SobreEnvioRequestDto)) datos: unknown,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
+    const parsedDatos = datos as SobreEnvioRequestDto;
+
     validateCertificadoFile(files?.certificado?.[0]);
     this.logger.log('[POST /sii/utilidades/sobre-envio]');
-    return this.siiService.generarSobreEnvio(datos, files.certificado[0]);
+    return this.siiService.generarSobreEnvio(parsedDatos, files.certificado[0]);
   }
 
   @Post('rvd')
@@ -53,12 +63,14 @@ export class UtilidadesController {
   @ApiResponse({ status: 201, description: 'RVD generado exitosamente.', type: SimpleApiResponseDto })
   @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async generarRvd(
-    @Body('datos', new ParseJsonPipe(RvdRequestDto)) datos: RvdRequestDto,
+    @Body('datos', new ParseJsonPipe(RvdRequestDto)) datos: unknown,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
+    const parsedDatos = datos as RvdRequestDto;
+
     validateCertificadoFile(files?.certificado?.[0]);
     this.logger.log('[POST /sii/utilidades/rvd]');
-    return this.siiService.generarRvd(datos, files.certificado[0]);
+    return this.siiService.generarRvd(parsedDatos, files.certificado[0]);
   }
 
   @Post('timbre')
@@ -73,10 +85,12 @@ export class UtilidadesController {
   })
   @ApiResponse({ status: 201, description: 'Timbre generado exitosamente.', type: SimpleApiResponseDto })
   async obtenerTimbre(
-    @Body('datos', new ParseJsonPipe(TimbreRequestDto)) datos: TimbreRequestDto,
+    @Body('datos', new ParseJsonPipe(TimbreRequestDto)) datos: unknown,
   ) {
+    const parsedDatos = datos as TimbreRequestDto;
+
     this.logger.log('[POST /sii/utilidades/timbre]');
-    return this.siiService.obtenerTimbre(datos);
+    return this.siiService.obtenerTimbre(parsedDatos);
   }
 
   @Post('muestra-impresa')
@@ -91,10 +105,12 @@ export class UtilidadesController {
   })
   @ApiResponse({ status: 201, description: 'PDF generado exitosamente.', type: SimpleApiResponseDto })
   async obtenerMuestraImpresa(
-    @Body('datos', new ParseJsonPipe(MuestraImpresaRequestDto)) datos: MuestraImpresaRequestDto,
+    @Body('datos', new ParseJsonPipe(MuestraImpresaRequestDto)) datos: unknown,
   ) {
+    const parsedDatos = datos as MuestraImpresaRequestDto;
+
     this.logger.log('[POST /sii/utilidades/muestra-impresa]');
-    return this.siiService.obtenerMuestraImpresa(datos);
+    return this.siiService.obtenerMuestraImpresa(parsedDatos);
   }
 
   @Post('validador')
@@ -119,15 +135,42 @@ export class UtilidadesController {
   @Post('folios')
   @ApiOperation({ summary: 'Obtener Folios (CAF) desde el SII' })
   @ApiConsumes('multipart/form-data')
-  @ApiBody({ schema: { properties: { datos: { type: 'string' }, certificado: { type: 'string', format: 'binary' } } } })
-  @ApiResponse({ status: 201, description: 'Folios obtenidos exitosamente.', type: SimpleApiResponseDto })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['datos', 'certificado'],
+      properties: {
+        datos: {
+          type: 'string',
+          description: 'JSON de FoliosRequestDto con RutEmpresa, TipoDTE, Cantidad, Ambiente y Certificado.{Rut, Password}',
+          example: '{"RutEmpresa":"76269769-6","TipoDTE":33,"Cantidad":1,"Ambiente":0,"Certificado":{"Rut":"17096073-4","Password":"secreto"}}',
+        },
+        certificado: {
+          type: 'string',
+          format: 'binary',
+          description: 'Archivo .pfx del certificado digital usado para solicitar folios al SII',
+        },
+      },
+    },
+  })
+  @ApiProduces('application/xml')
+  @ApiResponse({
+    status: 201,
+    description: 'Folios obtenidos exitosamente. SimpleAPI responde el CAF en XML.',
+    schema: {
+      type: 'string',
+      example: '<?xml version="1.0"?><AUTORIZACION>...</AUTORIZACION>',
+    },
+  })
   @UseInterceptors(FileFieldsInterceptor([{ name: 'certificado', maxCount: 1 }], { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async obtenerFolios(
-    @Body('datos', new ParseJsonPipe(FoliosRequestDto)) datos: FoliosRequestDto,
+    @Body('datos', new ParseJsonPipe(FoliosRequestDto)) datos: unknown,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
+    const parsedDatos = datos as FoliosRequestDto;
+
     validateCertificadoFile(files?.certificado?.[0]);
     this.logger.log('[POST /sii/utilidades/folios]');
-    return this.siiService.obtenerFolios(datos, files.certificado[0]);
+    return this.siiService.obtenerFolios(parsedDatos, files.certificado[0]);
   }
 }

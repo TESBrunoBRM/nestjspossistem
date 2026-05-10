@@ -9,8 +9,13 @@ import {
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 
+export const FOLIOS_TIPO_DTE_VALUES = [33, 34, 39, 41, 43, 46, 52, 56, 61, 110, 111, 112] as const;
+
 export class CertificadoFoliosDto {
-  @ApiProperty({ description: 'RUT del titular del certificado', example: '12345678-9' })
+  @ApiProperty({
+    description: 'RUT del titular del certificado digital, sin puntos y con guión',
+    example: '17096073-4',
+  })
   @IsString()
   @IsNotEmpty()
   Rut: string;
@@ -25,7 +30,10 @@ export class CertificadoFoliosDto {
  * DTO para la obtención de folios (CAF) desde el SII.
  */
 export class FoliosRequestDto {
-  @ApiProperty({ description: 'RUT de la empresa', example: '76123456-7' })
+  @ApiProperty({
+    description: 'RUT de la empresa a la que se solicitarán folios, sin puntos y con guión',
+    example: '76269769-6',
+  })
   @IsString()
   @IsNotEmpty()
   RutEmpresa: string;
@@ -33,10 +41,10 @@ export class FoliosRequestDto {
   @ApiProperty({
     description: 'Tipo de DTE para los folios',
     example: 33,
-    enum: [33, 34, 39, 41, 46, 52, 56, 61],
+    enum: FOLIOS_TIPO_DTE_VALUES,
   })
   @IsInt()
-  @IsIn([33, 34, 39, 41, 46, 52, 56, 61])
+  @IsIn(FOLIOS_TIPO_DTE_VALUES)
   TipoDTE: number;
 
   @ApiProperty({ description: 'Cantidad de folios a solicitar', example: 10 })

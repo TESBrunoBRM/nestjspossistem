@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpException } from '@nestjs/common';
 import { SiiService } from './sii.service';
 import axios from 'axios';
+import { FoliosRequestDto } from './dto/utilidades-folios.dto';
 
 // Mockeamos la librería axios completa
 jest.mock('axios');
@@ -109,6 +110,52 @@ describe('SiiService', () => {
 
       const result = await service.healthCheck();
       expect(result.status).toBe('unreachable');
+    });
+  });
+
+  describe('obtenerFolios', () => {
+    it('debe usar el endpoint, campos multipart y timeout documentados por SimpleAPI', async () => {
+      const dto: FoliosRequestDto = {
+        RutEmpresa: '76269769-6',
+        TipoDTE: 33,
+        Cantidad: 1,
+        Ambiente: 0,
+        Certificado: {
+          Rut: '17096073-4',
+          Password: 'secreto',
+        },
+      };
+      const certificadoFile = {
+        buffer: Buffer.from('dummy-pfx'),
+        originalname: 'certificado.pfx',
+      } as Express.Multer.File;
+      const xmlResponse = '<?xml version="1.0"?><AUTORIZACION>...</AUTORIZACION>';
+
+      mockAxiosInstance.post.mockResolvedValue({ data: xmlResponse });
+
+      const result = await service.obtenerFolios(dto, certificadoFile);
+
+      expect(result).toBe(xmlResponse);
+      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(1);
+
+      const [endpoint, form, config] = mockAxiosInstance.post.mock.calls[0] as [
+        string,
+        { getBuffer: () => Buffer },
+        Record<string, unknown>,
+      ];
+      const multipartBody = form.getBuffer().toString('utf8');
+
+      expect(endpoint).toBe('/api/folios/get/33/1');
+      expect(config.baseURL).toBe('https://servicios.simpleapi.cl');
+      expect(config.timeout).toBe(120000);
+      expect(config.responseType).toBe('text');
+      expect(config.headers).toMatchObject({ Authorization: 'test-key' });
+      expect(multipartBody).toContain('name="input"');
+      expect(multipartBody).toContain('name="files"');
+      expect(multipartBody).toContain('"RutCertificado":"17096073-4"');
+      expect(multipartBody).toContain('"RutEmpresa":"76269769-6"');
+      expect(multipartBody).not.toContain('"TipoDTE"');
+      expect(multipartBody).not.toContain('"Cantidad"');
     });
   });
 });

@@ -27,6 +27,7 @@ Todo se configura en el archivo `.env` en la raíz del proyecto:
 | Variable              | Descripción                                    | Valor por defecto              |
 |-----------------------|------------------------------------------------|-------------------------------|
 | `SIMPLEAPI_BASE_URL`  | URL base de la API de SimpleAPI                | `https://api.simpleapi.cl`    |
+| `SIMPLEAPI_FOLIOS_BASE_URL` | URL base específica para solicitud de folios CAF | `https://servicios.simpleapi.cl` |
 | `SIMPLEAPI_KEY`       | Tu API Key de SimpleAPI                        | —                             |
 | `SIMPLEAPI_AMBIENTE`  | `0` = Certificación (pruebas) · `1` = Producción | `0`                         |
 | `API_KEY_FRONTEND`    | **La clave secreta que Flutter debe enviar en `x-api-key`** | `MiSuperClavePOS2024` |

@@ -50,9 +50,11 @@ export class ConsultaController {
   )
   async consultarEstadoEnvio(
     @Param('trackId') trackId: string,
-    @Body('datos', new ParseJsonPipe(ConsultaEstadoEnvioDto)) datos: ConsultaEstadoEnvioDto,
+    @Body('datos', new ParseJsonPipe(ConsultaEstadoEnvioDto)) datos: unknown,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
+    const parsedDatos = datos as ConsultaEstadoEnvioDto;
+
     if (!trackId || trackId.trim().length === 0) {
       throw new BadRequestException('trackId es obligatorio en la URL');
     }
@@ -61,11 +63,11 @@ export class ConsultaController {
 
     this.logger.log(`[POST /sii/consultas/estado-envio/${trackId}]`);
     return this.siiService.consultarEstadoEnvio(
-      datos.rutEmpresa,
+      parsedDatos.rutEmpresa,
       trackId,
       files.certificado[0],
-      datos.rutCertificado,
-      datos.passwordCertificado,
+      parsedDatos.rutCertificado,
+      parsedDatos.passwordCertificado,
     );
   }
 
@@ -93,24 +95,26 @@ export class ConsultaController {
     }),
   )
   async consultarEstadoDte(
-    @Body('datos', new ParseJsonPipe(ConsultaEstadoDteDto)) datos: ConsultaEstadoDteDto,
+    @Body('datos', new ParseJsonPipe(ConsultaEstadoDteDto)) datos: unknown,
     @UploadedFiles() files: { certificado?: Express.Multer.File[] },
   ) {
+    const parsedDatos = datos as ConsultaEstadoDteDto;
+
     validateCertificadoFile(files?.certificado?.[0]);
 
     this.logger.log(
-      `[POST /sii/consultas/estado-dte] folio=${datos.folio} tipo=${datos.tipoDte}`,
+      `[POST /sii/consultas/estado-dte] folio=${parsedDatos.folio} tipo=${parsedDatos.tipoDte}`,
     );
     return this.siiService.consultarEstadoDte(
-      datos.rutEmpresa,
-      datos.rutReceptor,
-      datos.folio,
-      datos.tipoDte,
-      datos.total,
-      datos.fechaDte,
+      parsedDatos.rutEmpresa,
+      parsedDatos.rutReceptor,
+      parsedDatos.folio,
+      parsedDatos.tipoDte,
+      parsedDatos.total,
+      parsedDatos.fechaDte,
       files.certificado[0],
-      datos.rutCertificado,
-      datos.passwordCertificado,
+      parsedDatos.rutCertificado,
+      parsedDatos.passwordCertificado,
     );
   }
 }

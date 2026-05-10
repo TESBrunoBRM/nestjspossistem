@@ -49,14 +49,16 @@ export class FacturaController {
     ),
   )
   async emitirFactura(
-    @Body('datos', new ParseJsonPipe(EmitirFacturaDto)) dto: EmitirFacturaDto,
+    @Body('datos', new ParseJsonPipe(EmitirFacturaDto)) dto: unknown,
     @UploadedFiles() files: { certificado?: Express.Multer.File[]; caf?: Express.Multer.File[] },
   ) {
+    const parsedDto = dto as EmitirFacturaDto;
+
     validateCertificadoFile(files?.certificado?.[0]);
     validateCafFile(files?.caf?.[0]);
 
-    this.logger.log(`[POST /sii/facturas/emitir] Folio=${dto.IdentificacionDTE?.Folio}`);
-    return this.siiService.emitirFactura(dto, files.certificado[0], files.caf[0]);
+    this.logger.log(`[POST /sii/facturas/emitir] Folio=${parsedDto.IdentificacionDTE?.Folio}`);
+    return this.siiService.emitirFactura(parsedDto, files.certificado[0], files.caf[0]);
   }
 
   @Post('nota-credito')
@@ -81,13 +83,15 @@ export class FacturaController {
     ),
   )
   async emitirNotaCredito(
-    @Body('datos', new ParseJsonPipe(EmitirNotaCreditoDto)) dto: EmitirNotaCreditoDto,
+    @Body('datos', new ParseJsonPipe(EmitirNotaCreditoDto)) dto: unknown,
     @UploadedFiles() files: { certificado?: Express.Multer.File[]; caf?: Express.Multer.File[] },
   ) {
+    const parsedDto = dto as EmitirNotaCreditoDto;
+
     validateCertificadoFile(files?.certificado?.[0]);
     validateCafFile(files?.caf?.[0]);
 
-    this.logger.log(`[POST /sii/facturas/nota-credito] Folio=${dto.IdentificacionDTE?.Folio}`);
-    return this.siiService.emitirNotaCredito(dto, files.certificado[0], files.caf[0]);
+    this.logger.log(`[POST /sii/facturas/nota-credito] Folio=${parsedDto.IdentificacionDTE?.Folio}`);
+    return this.siiService.emitirNotaCredito(parsedDto, files.certificado[0], files.caf[0]);
   }
 }

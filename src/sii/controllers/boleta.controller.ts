@@ -62,18 +62,20 @@ export class BoletaController {
     ),
   )
   async emitirBoleta(
-    @Body('datos', new ParseJsonPipe(EmitirBoletaDto)) dto: EmitirBoletaDto,
+    @Body('datos', new ParseJsonPipe(EmitirBoletaDto)) dto: unknown,
     @UploadedFiles()
     files: {
       certificado?: Express.Multer.File[];
       caf?: Express.Multer.File[];
     },
   ) {
+    const parsedDto = dto as EmitirBoletaDto;
+
     validateCertificadoFile(files?.certificado?.[0]);
     validateCafFile(files?.caf?.[0]);
 
-    this.logger.log(`[POST /sii/boletas/emitir] Folio=${dto.IdentificacionDTE?.Folio}`);
+    this.logger.log(`[POST /sii/boletas/emitir] Folio=${parsedDto.IdentificacionDTE?.Folio}`);
 
-    return this.siiService.emitirBoleta(dto, files.certificado[0], files.caf[0]);
+    return this.siiService.emitirBoleta(parsedDto, files.certificado[0], files.caf[0]);
   }
 }
