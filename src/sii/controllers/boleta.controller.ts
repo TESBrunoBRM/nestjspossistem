@@ -15,9 +15,10 @@ import { EmitirBoletaDto } from '../dto/emitir-boleta.dto';
 import { ParseJsonPipe } from '../../common/pipes/parse-json.pipe';
 import { SimpleApiResponseDto } from '../dto/simple-api-response.dto';
 import { validateCertificadoFile, validateCafFile } from '../../common/utils/file-validation.util';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('Boletas')
+@ApiSecurity('x-api-key')
 @UseGuards(ApiKeyGuard)
 @Controller('sii/boletas')
 export class BoletaController {

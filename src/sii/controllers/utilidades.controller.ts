@@ -20,9 +20,10 @@ import { TimbreRequestDto } from '../dto/utilidades-timbre.dto';
 import { MuestraImpresaRequestDto } from '../dto/utilidades-muestra-impresa.dto';
 import { FoliosRequestDto } from '../dto/utilidades-folios.dto';
 import { validateCertificadoFile } from '../../common/utils/file-validation.util';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('Utilidades DTE')
+@ApiSecurity('x-api-key')
 @UseGuards(ApiKeyGuard)
 @Controller('sii/utilidades')
 export class UtilidadesController {

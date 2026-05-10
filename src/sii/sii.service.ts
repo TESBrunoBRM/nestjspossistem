@@ -30,7 +30,7 @@ export class SiiService {
       'SIMPLEAPI_KEY',
       '',
     );
-    this.ambiente = this.configService.get<number>('SIMPLEAPI_AMBIENTE', 0);
+    this.ambiente = Number(this.configService.get<number>('SIMPLEAPI_AMBIENTE', 0));
 
     this.http = axios.create({
       baseURL: this.baseUrl,

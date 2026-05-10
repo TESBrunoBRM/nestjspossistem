@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { SiiService } from '../src/sii/sii.service';
@@ -174,6 +175,26 @@ describe('SiiController (e2e)', () => {
         .set('x-api-key', 'MiSuperClavePOS2024')
         .expect(200)
         .expect({ status: 'ok' });
+    });
+  });
+
+  describe('Swagger', () => {
+    it('Debe documentar x-api-key en las rutas protegidas', () => {
+      const config = new DocumentBuilder()
+        .setTitle('API POS System - Integración SII')
+        .setDescription('Documentación de la API para el sistema POS y su integración con el SII a través de SimpleAPI.')
+        .setVersion('1.0')
+        .addApiKey({ type: 'apiKey', name: 'x-api-key', in: 'header' }, 'x-api-key')
+        .build();
+      const document = SwaggerModule.createDocument(app, config);
+      const boletaPathEntry = Object.entries(document.paths).find(([path]) =>
+        path.endsWith('/sii/boletas/emitir'),
+      );
+
+      expect(boletaPathEntry).toBeDefined();
+      expect(boletaPathEntry?.[1].post?.security).toContainEqual({
+        'x-api-key': [],
+      });
     });
   });
 });

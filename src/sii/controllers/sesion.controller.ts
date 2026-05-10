@@ -5,9 +5,10 @@ import {
 } from '@nestjs/common';
 import { ApiKeyGuard } from '../../auth/api-key.guard';
 import { SiiService } from '../sii.service';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('Sesión SII')
+@ApiSecurity('x-api-key')
 @UseGuards(ApiKeyGuard)
 @Controller('sii/sesion')
 export class SesionController {

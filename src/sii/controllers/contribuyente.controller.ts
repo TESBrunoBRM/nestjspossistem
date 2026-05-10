@@ -7,12 +7,13 @@ import {
 } from '@nestjs/common';
 import { ApiKeyGuard } from '../../auth/api-key.guard';
 import { SiiService } from '../sii.service';
-import { ApiTags, ApiOperation, ApiParam, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiParam, ApiResponse, ApiSecurity } from '@nestjs/swagger';
 
 /** Regex para RUT chileno: con o sin puntos, con guión y dígito verificador */
 const RUT_REGEX = /^\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]$/;
 
 @ApiTags('Contribuyentes')
+@ApiSecurity('x-api-key')
 @UseGuards(ApiKeyGuard)
 @Controller('sii/contribuyente')
 export class ContribuyenteController {

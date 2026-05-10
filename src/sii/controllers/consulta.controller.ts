@@ -17,9 +17,10 @@ import { ConsultaEstadoDteDto } from '../dto/consulta-estado-dte.dto';
 import { ConsultaEstadoEnvioDto } from '../dto/consulta-estado-envio.dto';
 import { ParseJsonPipe } from '../../common/pipes/parse-json.pipe';
 import { validateCertificadoFile } from '../../common/utils/file-validation.util';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('Consultas SII')
+@ApiSecurity('x-api-key')
 @UseGuards(ApiKeyGuard)
 @Controller('sii/consultas')
 export class ConsultaController {

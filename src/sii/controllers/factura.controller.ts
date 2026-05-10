@@ -16,9 +16,10 @@ import { EmitirNotaCreditoDto } from '../dto/emitir-nota-credito.dto';
 import { ParseJsonPipe } from '../../common/pipes/parse-json.pipe';
 import { SimpleApiResponseDto } from '../dto/simple-api-response.dto';
 import { validateCertificadoFile, validateCafFile } from '../../common/utils/file-validation.util';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('Facturas y Notas')
+@ApiSecurity('x-api-key')
 @UseGuards(ApiKeyGuard)
 @Controller('sii/facturas')
 export class FacturaController {
