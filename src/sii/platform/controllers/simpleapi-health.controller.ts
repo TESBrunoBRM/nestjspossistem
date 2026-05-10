@@ -6,19 +6,19 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../../../auth/api-key.guard';
-import { SiiService } from '../../sii.service';
+import { SimpleApiHealthService } from '../services/simpleapi-health.service';
 
 @ApiTags('Plataforma')
 @ApiSecurity('x-api-key')
 @UseGuards(ApiKeyGuard)
 @Controller('sii/sesion')
 export class SimpleApiHealthController {
-  constructor(private readonly siiService: SiiService) {}
+  constructor(private readonly simpleApiHealthService: SimpleApiHealthService) {}
 
   @Get('health')
   @ApiOperation({ summary: 'Verificar la conexión y configuración de SimpleAPI' })
   @ApiResponse({ status: 200, description: 'Estado de conexión OK.' })
   async health() {
-    return this.siiService.healthCheck();
+    return this.simpleApiHealthService.health();
   }
 }

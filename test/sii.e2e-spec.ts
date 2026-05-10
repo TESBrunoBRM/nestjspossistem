@@ -11,19 +11,36 @@ describe('SiiController (e2e)', () => {
   let frontendApiKey: string;
   
   const mockSiiService = {
-    emitirBoleta: jest.fn().mockResolvedValue({ trackId: '12345', folio: 12 }),
-    emitirFactura: jest.fn().mockResolvedValue({ trackId: '456', folio: 100 }),
-    emitirNotaCredito: jest.fn().mockResolvedValue({ trackId: '789' }),
-    consultarEstadoEnvio: jest.fn().mockResolvedValue({ estado: 'RECIBIDO' }),
-    consultarEstadoDte: jest.fn().mockResolvedValue({ estado: 'ACEPTADO' }),
-    obtenerTimbre: jest.fn().mockResolvedValue({ timbreBase64: 'abc' }),
-    obtenerMuestraImpresa: jest.fn().mockResolvedValue({ pdfBase64: 'abc' }),
-    validarDte: jest.fn().mockResolvedValue({ valido: true }),
-    generarRvd: jest.fn().mockResolvedValue({ success: true }),
-    obtenerFolios: jest.fn().mockResolvedValue({ cafBase64: 'abc' }),
-    generarSobreEnvio: jest.fn().mockResolvedValue({ xmlSobre: 'abc' }),
-    healthCheck: jest.fn().mockResolvedValue({ status: 'ok' }),
-    obtenerDatosEmpresa: jest.fn().mockResolvedValue({ razonSocial: 'Test' }),
+    getAmbiente: jest.fn().mockReturnValue(0),
+    getBaseUrl: jest.fn().mockReturnValue('http://localhost'),
+    getFoliosBaseUrl: jest.fn().mockReturnValue('http://localhost'),
+    getAmbienteLabel: jest.fn().mockReturnValue('certificación'),
+    get: jest.fn().mockImplementation((endpoint: string) => {
+      if (endpoint === '/') {
+        return Promise.resolve({});
+      }
+
+      if (endpoint.startsWith('/api/v1/sii/datos_empresa/')) {
+        return Promise.resolve({ razonSocial: 'Test' });
+      }
+
+      return Promise.resolve({});
+    }),
+    postForm: jest.fn().mockImplementation((endpoint: string) => {
+      const responses: Record<string, unknown> = {
+        '/api/v1/dte/boleta': { trackId: '12345', folio: 12 },
+        '/api/v1/dte/documento': { trackId: '456', folio: 100 },
+        '/api/v1/dte/estado_envio': { estado: 'RECIBIDO' },
+        '/api/v1/dte/estado_dte': { estado: 'ACEPTADO' },
+        '/api/v1/dte/timbre': { timbreBase64: 'abc' },
+        '/api/v1/dte/pdf': { pdfBase64: 'abc' },
+        '/api/v1/dte/validar': { valido: true },
+        '/api/v1/dte/rvd': { success: true },
+        '/api/v1/dte/sobre_envio': { xmlSobre: 'abc' },
+      };
+
+      return Promise.resolve(responses[endpoint] ?? { cafBase64: 'abc' });
+    }),
   };
 
   beforeAll(async () => {
@@ -174,12 +191,17 @@ describe('SiiController (e2e)', () => {
   });
 
   describe('GET /api/sii/sesion/health', () => {
-    it('Debe retornar estado de salud', () => {
-      return request(app.getHttpServer())
+    it('Debe retornar estado de salud', async () => {
+      const response = await request(app.getHttpServer())
         .get('/api/sii/sesion/health')
         .set('x-api-key', frontendApiKey)
-        .expect(200)
-        .expect({ status: 'ok' });
+        .expect(200);
+
+      expect(response.body).toEqual({
+        status: 'ok',
+        url: 'http://localhost',
+        ambiente: 'certificación',
+      });
     });
   });
 
