@@ -1,25 +1,23 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { SiiService } from './sii.service';
-import { BoletaController } from './controllers/boleta.controller';
-import { FacturaController } from './controllers/factura.controller';
-import { ConsultaController } from './controllers/consulta.controller';
-import { SesionController } from './controllers/sesion.controller';
-import { ContribuyenteController } from './controllers/contribuyente.controller';
-import { UtilidadesController } from './controllers/utilidades.controller';
+import { SiiCoreModule } from './core/sii-core.module';
+import { DteModule } from './dte/dte.module';
+import { FoliosModule } from './folios/folios.module';
+import { PlatformModule } from './platform/platform.module';
+import { RcvModule } from './rcv/rcv.module';
+import { RutModule } from './rut/rut.module';
 
 @Module({
-  imports: [ConfigModule],
-  controllers: [
-    BoletaController,
-    FacturaController,
-    ConsultaController,
-    SesionController,
-    ContribuyenteController,
-    UtilidadesController,
+  imports: [
+    ConfigModule,
+    SiiCoreModule,
+    PlatformModule,
+    DteModule,
+    FoliosModule,
+    RutModule,
+    RcvModule,
   ],
-  providers: [SiiService],
-  exports: [SiiService],
+  exports: [SiiCoreModule],
 })
 export class SiiModule {}
 

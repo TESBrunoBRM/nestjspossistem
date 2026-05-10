@@ -1,0 +1,1 @@
+export { EmitirFacturaDto } from '../../emitir-factura.dto';

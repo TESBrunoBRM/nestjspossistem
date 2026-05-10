@@ -1,0 +1,1 @@
+export { MuestraImpresaRequestDto } from '../../utilidades-muestra-impresa.dto';

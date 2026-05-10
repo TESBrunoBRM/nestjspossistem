@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -7,6 +8,7 @@ import { SiiService } from '../src/sii/sii.service';
 
 describe('SiiController (e2e)', () => {
   let app: INestApplication;
+  let frontendApiKey: string;
   
   const mockSiiService = {
     emitirBoleta: jest.fn().mockResolvedValue({ trackId: '12345', folio: 12 }),
@@ -27,7 +29,7 @@ describe('SiiController (e2e)', () => {
   beforeAll(async () => {
     // Definimos variables de entorno para que pase env.validation.ts
     process.env.API_KEY = 'test-api-key';
-    process.env.API_KEY_FRONTEND = 'MiSuperClavePOS2024';
+    process.env.API_KEY_FRONTEND = 'test-frontend-api-key';
     process.env.SIMPLE_API_URL = 'http://localhost';
     process.env.SIMPLEAPI_BASE_URL = 'http://localhost';
     process.env.SIMPLEAPI_KEY = 'simple-api-key';
@@ -53,10 +55,13 @@ describe('SiiController (e2e)', () => {
       }),
     );
     await app.init();
+    frontendApiKey = app.get(ConfigService).getOrThrow<string>('API_KEY_FRONTEND');
   });
 
   afterAll(async () => {
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   describe('POST /api/sii/boletas/emitir', () => {
@@ -69,7 +74,7 @@ describe('SiiController (e2e)', () => {
     it('Debe retornar 400 si faltan archivos o datos', () => {
       return request(app.getHttpServer())
         .post('/api/sii/boletas/emitir')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .expect(400);
     });
 
@@ -87,7 +92,7 @@ describe('SiiController (e2e)', () => {
 
       const response = await request(app.getHttpServer())
         .post('/api/sii/boletas/emitir')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .attach('certificado', dummyPfx, 'cert.pfx')
         .attach('caf', dummyXml, 'folios.xml')
         .field('datos', JSON.stringify(validDatos));
@@ -109,7 +114,7 @@ describe('SiiController (e2e)', () => {
       const dummyXml = Buffer.from('dummy-xml');
       const response = await request(app.getHttpServer())
         .post('/api/sii/boletas/emitir')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .attach('certificado', dummyPfx, 'cert.pfx')
         .attach('caf', dummyXml, 'folios.xml')
         .field('datos', 'not-a-json');
@@ -130,7 +135,7 @@ describe('SiiController (e2e)', () => {
       };
       const response = await request(app.getHttpServer())
         .post('/api/sii/boletas/emitir')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .attach('certificado', dummyPfx, 'cert.pfx')
         .attach('caf', dummyXml, 'folios.xml')
         .field('datos', JSON.stringify(invalidDatos));
@@ -145,7 +150,7 @@ describe('SiiController (e2e)', () => {
     it('Debe retornar 400 si falta el xml', () => {
       return request(app.getHttpServer())
         .post('/api/sii/utilidades/validador')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .send({})
         .expect(400);
     });
@@ -155,7 +160,7 @@ describe('SiiController (e2e)', () => {
     it('Debe retornar datos con RUT válido', () => {
       return request(app.getHttpServer())
         .get('/api/sii/contribuyente/76123456-7')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .expect(200)
         .expect({ razonSocial: 'Test' });
     });
@@ -163,7 +168,7 @@ describe('SiiController (e2e)', () => {
     it('Debe retornar 400 con RUT inválido', () => {
       return request(app.getHttpServer())
         .get('/api/sii/contribuyente/invalid')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .expect(400);
     });
   });
@@ -172,7 +177,7 @@ describe('SiiController (e2e)', () => {
     it('Debe retornar estado de salud', () => {
       return request(app.getHttpServer())
         .get('/api/sii/sesion/health')
-        .set('x-api-key', 'MiSuperClavePOS2024')
+        .set('x-api-key', frontendApiKey)
         .expect(200)
         .expect({ status: 'ok' });
     });

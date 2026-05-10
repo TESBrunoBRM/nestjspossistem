@@ -99,10 +99,10 @@ Todos los endpoints están bajo el prefijo `/api/sii`. Debido a la arquitectura 
 
 ```bash
 # Instalar dependencias
-npm install
+pnpm install
 
 # Modo desarrollo
-npm run start:dev
+pnpm run start:dev
 ```
 
 El servidor queda disponible en los siguientes puntos:

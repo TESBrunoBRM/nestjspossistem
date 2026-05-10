@@ -1,0 +1,1 @@
+export { ConsultaEstadoEnvioDto } from '../../consulta-estado-envio.dto';

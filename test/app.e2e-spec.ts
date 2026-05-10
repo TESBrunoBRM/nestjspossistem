@@ -9,7 +9,7 @@ describe('AppController (e2e)', () => {
 
   beforeEach(async () => {
     process.env.API_KEY = 'test-api-key';
-    process.env.API_KEY_FRONTEND = 'frontend-api-key';
+    process.env.API_KEY_FRONTEND = 'test-frontend-api-key';
     process.env.SIMPLE_API_URL = 'http://localhost';
     process.env.SIMPLEAPI_BASE_URL = 'http://localhost';
     process.env.SIMPLEAPI_KEY = 'simple-api-key';
@@ -30,6 +30,8 @@ describe('AppController (e2e)', () => {
   });
 
   afterEach(async () => {
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 });
