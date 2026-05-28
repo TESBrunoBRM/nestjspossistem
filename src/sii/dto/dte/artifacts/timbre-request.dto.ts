@@ -1,1 +1,0 @@
-export { TimbreRequestDto } from '../../utilidades-timbre.dto';

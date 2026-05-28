@@ -1,0 +1,1477 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
+import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
+import { mkdtemp, readFile, rm } from 'fs/promises';
+import { Agent as HttpsAgent } from 'https';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  chromium,
+  type BrowserContext,
+  type Frame,
+  type Locator,
+  type Page,
+} from 'playwright';
+import {
+  SiiEnvironment,
+  assertCafAcquisitionRequest,
+  parseCaf,
+  type CertificateMaterial,
+  type CafAcquisitionProvider,
+  type CafAcquisitionRequest,
+  type CafAcquisitionResult,
+  type SigningProvider,
+} from 'sii-engine';
+import { sanitizePublicPayload } from '../common/security/sensitive-redaction.util';
+import { FISCAL_SIGNING_PROVIDER } from '../fiscal/fiscal-provider.tokens';
+import { FiscalTokenProvider } from '../fiscal/fiscal-token.provider';
+import { ALLOWED_CAF_ACQUISITION_TIPO_DTE } from './dto/request-caf-acquisition.dto';
+
+const CAF_XML_PATTERN = /<AUTORIZACION[\s\S]*?<\/AUTORIZACION>/i;
+const DEFAULT_CERTIFICATE_ORIGINS = [
+  'https://zeusr.sii.cl',
+  'https://zeus.sii.cl',
+  'https://hercules.sii.cl',
+  'https://herculesr.sii.cl',
+  'https://homer.sii.cl',
+  'https://palena.sii.cl',
+  'https://maullin.sii.cl',
+  'https://www2.sii.cl',
+  'https://www4.sii.cl',
+];
+const MAX_DEBUG_CONTROLS = 50;
+const TOKEN_COOKIE_NAME = 'TOKEN';
+const SESSION_RETRY_LIMIT = 1;
+const CERT_LOGIN_REDIRECT_LIMIT = 8;
+
+type LocatorScope = Page | Frame;
+
+interface BrowserCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+}
+
+@Injectable()
+export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
+  private readonly logger = new Logger(SiiPortalFoliosAdapter.name);
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly tokenProvider: FiscalTokenProvider,
+    @Inject(FISCAL_SIGNING_PROVIDER)
+    private readonly signingProvider: SigningProvider,
+  ) {}
+
+  async requestCaf(
+    request: CafAcquisitionRequest,
+  ): Promise<CafAcquisitionResult> {
+    assertCafAcquisitionRequest(request, {
+      allowedTipoDTE: ALLOWED_CAF_ACQUISITION_TIPO_DTE,
+      maxQuantity: this.maxQuantity(),
+    });
+
+    if (!this.automationEnabled()) {
+      return this.manualActionRequiredResult(
+        request,
+        'Automatizacion del portal SII deshabilitada. Configure SII_PORTAL_CAF_AUTOMATION_ENABLED=true en un entorno controlado.',
+      );
+    }
+
+    const requestedAt = new Date();
+
+    try {
+      const cafXml = await this.downloadCafXmlWithSession(request);
+      const caf = parseCaf(cafXml);
+
+      return {
+        requestId: randomUUID(),
+        status: 'downloaded',
+        method: 'sii_portal_automation',
+        context: request.context,
+        tipoDTE: request.tipoDTE,
+        quantityRequested: request.quantity,
+        requestedAt,
+        completedAt: new Date(),
+        caf,
+        retryable: false,
+      };
+    } catch (error) {
+      this.logger.warn(this.safeErrorMessage(error));
+      return {
+        requestId: randomUUID(),
+        status: 'failed',
+        method: 'sii_portal_automation',
+        context: request.context,
+        tipoDTE: request.tipoDTE,
+        quantityRequested: request.quantity,
+        requestedAt,
+        completedAt: new Date(),
+        detail: this.safeErrorMessage(error),
+        retryable: true,
+      };
+    }
+  }
+
+  private async downloadCafXmlWithSession(
+    request: CafAcquisitionRequest,
+  ): Promise<string> {
+    let forceRefresh = false;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= SESSION_RETRY_LIMIT; attempt += 1) {
+      try {
+        return await this.downloadCafXmlAttempt(request, forceRefresh);
+      } catch (error) {
+        lastError = error;
+        if (!this.shouldRefreshSession(error, forceRefresh)) throw error;
+
+        this.tokenProvider.invalidate(request.context);
+        forceRefresh = true;
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('Error desconocido en portal SII');
+  }
+
+  private async downloadCafXmlAttempt(
+    request: CafAcquisitionRequest,
+    forceRefresh: boolean,
+  ): Promise<string> {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sii-caf-'));
+
+    try {
+      const authToken = await this.tokenProvider.getToken(
+        request.context,
+        this.signingProvider,
+        forceRefresh,
+      );
+      const cert = await this.signingProvider.getSigningMaterial(
+        request.context,
+      );
+      if (this.httpScrapingEnabled()) {
+        try {
+          return await this.downloadCafXmlViaHttp(request, cert);
+        } catch (error) {
+          if (!this.playwrightFallbackEnabled()) throw error;
+          this.logger.warn(this.safeErrorMessage(error));
+        }
+      }
+
+      const context = await this.createBrowserContext(
+        request,
+        userDataDir,
+        cert,
+      );
+      try {
+        await this.addTokenCookies(
+          context,
+          request.context.environment,
+          authToken.token,
+        );
+        await this.addCertificateLoginCookies(context, request, cert);
+        return await this.downloadCafXml(context, request);
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  }
+
+  private async downloadCafXmlViaHttp(
+    request: CafAcquisitionRequest,
+    cert: CertificateMaterial,
+  ): Promise<string> {
+    const loginCookies = await this.fetchCertificateLoginCookies(request, cert);
+    const cookieJar = new Map(
+      loginCookies.map((cookie) => [cookieKey(cookie), cookie]),
+    );
+    const baseUrl = this.portalBaseUrl(request.context.environment);
+    const { body: rutBody, dv } = splitRut(request.context.rutEmisor);
+    const startUrl = this.startUrl(request.context.environment);
+    const firstStepUrl = new URL(
+      '/cvc_cgi/dte/of_solicita_folios_dcto',
+      baseUrl,
+    ).toString();
+    const confirmUrl = new URL(
+      '/cvc_cgi/dte/of_confirma_folio',
+      baseUrl,
+    ).toString();
+    const generateUrl = new URL(
+      '/cvc_cgi/dte/of_genera_folio',
+      baseUrl,
+    ).toString();
+
+    await this.portalHttpPost(
+      firstStepUrl,
+      {
+        RUT_EMP: rutBody,
+        DV_EMP: dv,
+        ACEPTAR: 'Continuar',
+      },
+      startUrl,
+      cert,
+      cookieJar,
+    );
+
+    const confirmationHtml = await this.portalHttpPost(
+      confirmUrl,
+      {
+        RUT_EMP: rutBody,
+        DV_EMP: dv,
+        FOLIO_INICIAL: '0',
+        COD_DOCTO: String(request.tipoDTE),
+        AFECTO_IVA: 'S',
+        ANOTACION: 'N',
+        CON_CREDITO: '',
+        CON_AJUSTE: '',
+        FACTOR: '',
+        CANT_DOCTOS: String(request.quantity),
+        ACEPTAR: 'Solicitar',
+      },
+      firstStepUrl,
+      cert,
+      cookieJar,
+    );
+    this.assertHttpPortalStep(
+      confirmationHtml,
+      'El portal SII no entrego confirmacion de folios',
+    );
+
+    const hiddenFields = extractInputValues(confirmationHtml);
+    const cafResponse = await this.portalHttpPost(
+      generateUrl,
+      {
+        ...hiddenFields,
+        ACEPTAR: 'Obtener',
+      },
+      confirmUrl,
+      cert,
+      cookieJar,
+    );
+    let cafXml = extractCafXml(cafResponse);
+    const cafDownloadUrl = findCafDownloadUrl(cafResponse, generateUrl);
+    if (!cafXml && cafDownloadUrl) {
+      const downloadResponse = await this.portalHttpGet(
+        cafDownloadUrl,
+        generateUrl,
+        cert,
+        cookieJar,
+      );
+      cafXml = extractCafXml(downloadResponse);
+    }
+    const cafArchiveFormUrl = findFormActionUrl(
+      cafResponse,
+      generateUrl,
+      /of_genera_archivo/i,
+    );
+    if (!cafXml && cafArchiveFormUrl) {
+      const archiveResponse = await this.portalHttpPost(
+        cafArchiveFormUrl,
+        {
+          ...extractInputValues(cafResponse),
+          ACEPTAR: 'Obtener',
+        },
+        generateUrl,
+        cert,
+        cookieJar,
+      );
+      cafXml = extractCafXml(archiveResponse);
+    }
+
+    if (!cafXml) {
+      throw new Error(
+        `El portal SII no devolvio CAF XML despues de confirmar folios. ${extractFinalResponseHints(cafResponse)}`,
+      );
+    }
+
+    return cafXml;
+  }
+
+  private async portalHttpGet(
+    url: string,
+    referer: string,
+    cert: CertificateMaterial,
+    cookieJar: Map<string, BrowserCookie>,
+  ): Promise<string> {
+    const response = await axios.get<string>(url, {
+      headers: {
+        Cookie: cookieHeaderForUrl(cookieJar, url),
+        Referer: referer,
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+      httpsAgent: new HttpsAgent({
+        cert: cert.certificatePem,
+        key: cert.privateKeyPem,
+      }),
+      maxRedirects: 0,
+      timeout: this.timeoutMs(),
+      validateStatus: () => true,
+    });
+
+    storeSetCookies(cookieJar, response.headers['set-cookie'], url);
+    const responseText = String(response.data ?? '');
+
+    if (response.status >= 400) {
+      throw new Error(`Portal SII respondio HTTP ${response.status}`);
+    }
+
+    return responseText;
+  }
+
+  private async portalHttpPost(
+    url: string,
+    params: Record<string, string>,
+    referer: string,
+    cert: CertificateMaterial,
+    cookieJar: Map<string, BrowserCookie>,
+  ): Promise<string> {
+    const response = await axios.post<string>(url, new URLSearchParams(params), {
+      headers: {
+        Cookie: cookieHeaderForUrl(cookieJar, url),
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Referer: referer,
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+      httpsAgent: new HttpsAgent({
+        cert: cert.certificatePem,
+        key: cert.privateKeyPem,
+      }),
+      maxRedirects: 0,
+      timeout: this.timeoutMs(),
+      validateStatus: () => true,
+    });
+
+    storeSetCookies(cookieJar, response.headers['set-cookie'], url);
+    const responseText = String(response.data ?? '');
+
+    if (response.status >= 400) {
+      throw new Error(`Portal SII respondio HTTP ${response.status}`);
+    }
+
+    return responseText;
+  }
+
+  private assertHttpPortalStep(responseText: string, message: string): void {
+    const normalizedText = normalizeForMatch(
+      responseText.replace(/<[^>]+>/g, ' '),
+    );
+    if (hasSessionFailureMarker(normalizedText)) {
+      throw new SiiPortalSessionError(message);
+    }
+  }
+
+  private async createBrowserContext(
+    request: CafAcquisitionRequest,
+    userDataDir: string,
+    cert: CertificateMaterial,
+  ): Promise<BrowserContext> {
+    const executablePath = this.browserExecutablePath();
+
+    return chromium.launchPersistentContext(userDataDir, {
+      acceptDownloads: true,
+      channel: executablePath ? undefined : this.browserChannel(),
+      executablePath,
+      headless: this.headless(),
+      timeout: this.timeoutMs(),
+      clientCertificates: this.browserClientCertificatesEnabled()
+        ? this.certificateOrigins().map((origin) => ({
+            origin,
+            cert: Buffer.from(cert.certificatePem, 'utf8'),
+            key: Buffer.from(cert.privateKeyPem, 'utf8'),
+          }))
+        : [],
+    });
+  }
+
+  private async downloadCafXml(
+    context: BrowserContext,
+    request: CafAcquisitionRequest,
+  ): Promise<string> {
+    const page = await context.newPage();
+    const responseXmlCandidates: string[] = [];
+
+    page.on('response', (response) => {
+      void this.captureCafResponse(response, responseXmlCandidates);
+    });
+
+    await page.goto(this.startUrl(request.context.environment), {
+      waitUntil: 'commit',
+      timeout: this.timeoutMs(),
+    });
+    await page
+      .waitForLoadState('domcontentloaded', { timeout: shortTimeout() })
+      .catch(() => undefined);
+    await this.ensureAuthenticated(page);
+
+    await this.tryFillRut(page, request.context.rutEmisor);
+    await this.tryClick(page, continueSelectors(), /continuar|ingresar/i);
+    await this.waitAfterAction(page);
+
+    await this.tryClick(
+      page,
+      folioMenuSelectors(),
+      /solicitud de timbraje|timbraje electr/i,
+    );
+    await this.waitAfterAction(page);
+
+    await this.tryFillRut(page, request.context.rutEmisor);
+    await this.selectTipoDte(page, request.tipoDTE);
+    await this.fillQuantity(page, request.quantity);
+
+    const downloadPromise = page
+      .waitForEvent('download', { timeout: this.timeoutMs() })
+      .catch(() => undefined);
+
+    await this.tryClick(
+      page,
+      requestSelectors(),
+      /solicitar|numeraci|timbraje|continuar|enviar/i,
+    );
+    await this.waitAfterAction(page);
+
+    await this.tryClick(
+      page,
+      confirmSelectors(),
+      /confirmar|obtener|descargar|generar|aceptar/i,
+    );
+    await this.waitAfterAction(page);
+
+    const download = await downloadPromise;
+    const downloadedXml = download
+      ? await this.readDownloadIfCaf(download)
+      : undefined;
+    const pageXml = extractCafXml(await page.content());
+    const responseXml = responseXmlCandidates.find((item) =>
+      CAF_XML_PATTERN.test(item),
+    );
+    const cafXml = downloadedXml ?? pageXml ?? responseXml;
+
+    if (!cafXml) {
+      throw new Error(
+        await this.portalDebugMessage(
+          page,
+          'No se pudo descargar CAF desde el portal SII. Revise autorizacion del certificado, selectores del portal o accion manual requerida.',
+        ),
+      );
+    }
+
+    return cafXml;
+  }
+
+  private async captureCafResponse(
+    response: { headers(): Record<string, string>; text(): Promise<string> },
+    candidates: string[],
+  ): Promise<void> {
+    try {
+      const contentType = response.headers()['content-type'] ?? '';
+      if (!/xml|text|octet-stream/i.test(contentType)) return;
+
+      const text = await response.text();
+      const cafXml = extractCafXml(text);
+      if (cafXml) candidates.push(cafXml);
+    } catch {
+      // Ignore body read errors; the download/page-content paths remain active.
+    }
+  }
+
+  private async readDownloadIfCaf(download: {
+    path(): Promise<string | null>;
+  }): Promise<string | undefined> {
+    const path = await download.path();
+    if (!path) return undefined;
+
+    const content = await readFile(path, 'utf8');
+    return extractCafXml(content);
+  }
+
+  private async addTokenCookies(
+    context: BrowserContext,
+    environment: SiiEnvironment,
+    token: string,
+  ): Promise<void> {
+    await context.addCookies(
+      this.tokenCookieDomains(environment).map((domain) => ({
+        name: TOKEN_COOKIE_NAME,
+        value: token,
+        domain,
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax' as const,
+      })),
+    );
+  }
+
+  private async addCertificateLoginCookies(
+    context: BrowserContext,
+    request: CafAcquisitionRequest,
+    cert: CertificateMaterial,
+  ): Promise<void> {
+    if (
+      this.configService.get<string>('SII_PORTAL_CERT_LOGIN_ENABLED') ===
+      'false'
+    ) {
+      return;
+    }
+
+    const cookies = await this.fetchCertificateLoginCookies(request, cert);
+    if (cookies.length === 0) return;
+
+    await context.addCookies(cookies);
+  }
+
+  private async fetchCertificateLoginCookies(
+    request: CafAcquisitionRequest,
+    cert: CertificateMaterial,
+  ): Promise<BrowserCookie[]> {
+    const jar = new Map<string, BrowserCookie>();
+    let currentUrl = this.certificateLoginUrl(request.context.environment, cert);
+    const httpsAgent = new HttpsAgent({
+      cert: cert.certificatePem,
+      key: cert.privateKeyPem,
+    });
+
+    for (let attempt = 0; attempt < CERT_LOGIN_REDIRECT_LIMIT; attempt += 1) {
+      const response = await axios.get<string>(currentUrl, {
+        headers: {
+          Cookie: cookieHeaderForUrl(jar, currentUrl),
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        httpsAgent,
+        maxRedirects: 0,
+        timeout: this.timeoutMs(),
+        validateStatus: () => true,
+      });
+
+      storeSetCookies(jar, response.headers['set-cookie'], currentUrl);
+
+      if (!isRedirectStatus(response.status)) break;
+
+      const location = response.headers.location;
+      if (!location) break;
+      currentUrl = new URL(location, currentUrl).toString();
+    }
+
+    return Array.from(jar.values()).filter((cookie) =>
+      domainMatchesSii(cookie.domain),
+    );
+  }
+
+  private async tryFillRut(page: Page, rut: string): Promise<void> {
+    const { body, dv } = splitRut(rut);
+
+    const filledSplit = await this.fillFirstVisible(
+      page,
+      rutBodySelectors(),
+      body,
+    );
+    const filledDv = await this.fillFirstVisible(page, rutDvSelectors(), dv);
+    if (filledSplit || filledDv) return;
+
+    await this.fillFirstVisible(page, rutSingleSelectors(), rut);
+  }
+
+  private async selectTipoDte(page: Page, tipoDTE: number): Promise<void> {
+    const selectors = this.selectorList('SII_PORTAL_TIPO_DTE_SELECTOR', [
+      'select[name*="TIPO"]',
+      'select[name*="tipo"]',
+      'select[name*="Tpo"]',
+      'select',
+    ]);
+
+    for (const scope of this.scopes(page)) {
+      for (const selector of selectors) {
+        const locator = scope.locator(selector).first();
+        if (!(await isUsable(locator))) continue;
+        if (await this.trySelectDteOption(locator, tipoDTE)) return;
+      }
+    }
+
+    const dtePattern = new RegExp(
+      tipoDteLabels(tipoDTE).map(escapeRegExp).join('|'),
+      'i',
+    );
+    for (const scope of this.scopes(page)) {
+      const radio = scope
+        .getByRole('radio', { name: dtePattern })
+        .or(scope.locator(`input[type="radio"][value="${tipoDTE}"]`))
+        .or(scope.locator(`input[type="checkbox"][value="${tipoDTE}"]`))
+        .first();
+      if (await isUsable(radio)) {
+        await radio.click({ timeout: shortTimeout() });
+        return;
+      }
+
+      const label = scope
+        .locator('label')
+        .filter({ hasText: dtePattern })
+        .first();
+      if (await isUsable(label)) {
+        await label.click({ timeout: shortTimeout() });
+        return;
+      }
+    }
+
+    throw new Error(
+      await this.portalDebugMessage(
+        page,
+        'No se encontro selector usable para tipoDTE en portal SII',
+      ),
+    );
+  }
+
+  private async trySelectDteOption(
+    locator: Locator,
+    tipoDTE: number,
+  ): Promise<boolean> {
+    try {
+      await locator.selectOption(String(tipoDTE), {
+        timeout: shortTimeout(),
+      });
+      return true;
+    } catch {
+      // Continue with label/text based selection.
+    }
+
+    for (const label of tipoDteLabels(tipoDTE)) {
+      try {
+        await locator.selectOption({ label }, { timeout: shortTimeout() });
+        return true;
+      } catch {
+        // Continue with next label.
+      }
+    }
+
+    const option = await this.findMatchingOption(locator, tipoDTE);
+    if (!option) return false;
+
+    await locator.selectOption(option, { timeout: shortTimeout() });
+    return true;
+  }
+
+  private async findMatchingOption(
+    locator: Locator,
+    tipoDTE: number,
+  ): Promise<{ value: string } | { index: number } | undefined> {
+    const optionLocator = locator.locator('option');
+    const count = Math.min(await optionLocator.count(), 100);
+    const labels = tipoDteLabels(tipoDTE).map(normalizeForMatch);
+
+    for (let index = 0; index < count; index += 1) {
+      const option = optionLocator.nth(index);
+      const value = await option.getAttribute('value').catch(() => undefined);
+      const text = await option.innerText().catch(() => '');
+      const normalizedValue = normalizeForMatch(value ?? '');
+      const normalizedText = normalizeForMatch(text);
+      const matches =
+        normalizedValue === String(tipoDTE) ||
+        normalizedText.includes(String(tipoDTE)) ||
+        labels.some((label) => normalizedText.includes(label));
+
+      if (!matches) continue;
+
+      return value ? { value } : { index };
+    }
+
+    return undefined;
+  }
+
+  private async fillQuantity(page: Page, quantity: number): Promise<void> {
+    const filled = await this.fillFirstVisible(
+      page,
+      this.selectorList('SII_PORTAL_QUANTITY_SELECTOR', [
+        'input[name*="CANT"]',
+        'input[name*="cant"]',
+        'input[name*="FOLIO"]',
+        'input[type="number"]',
+      ]),
+      String(quantity),
+    );
+
+    if (!filled) {
+      throw new Error('No se encontro selector usable para cantidad de folios');
+    }
+  }
+
+  private async fillFirstVisible(
+    page: Page,
+    selectors: string[],
+    value: string,
+  ): Promise<boolean> {
+    for (const scope of this.scopes(page)) {
+      for (const selector of selectors) {
+        const locator = scope.locator(selector).first();
+        if (!(await isUsable(locator))) continue;
+
+        await locator.fill(value, { timeout: shortTimeout() });
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async tryClick(
+    page: Page,
+    selectors: string[],
+    textPattern: RegExp,
+  ): Promise<boolean> {
+    for (const scope of this.scopes(page)) {
+      for (const selector of selectors) {
+        const locator = scope.locator(selector).first();
+        if (!(await isUsable(locator))) continue;
+
+        await locator.click({ timeout: shortTimeout() });
+        return true;
+      }
+    }
+
+    const href = await this.findFirstHref(page, selectors);
+    if (href) {
+      await page.goto(resolveUrl(href, page.url()), {
+        waitUntil: 'domcontentloaded',
+        timeout: this.timeoutMs(),
+      });
+      return true;
+    }
+
+    for (const scope of this.scopes(page)) {
+      const button = scope
+        .getByRole('button', { name: textPattern })
+        .or(scope.getByRole('link', { name: textPattern }))
+        .first();
+      if (await isUsable(button)) {
+        await button.click({ timeout: shortTimeout() });
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async findFirstHref(
+    page: Page,
+    selectors: string[],
+  ): Promise<string | undefined> {
+    for (const scope of this.scopes(page)) {
+      for (const selector of selectors) {
+        const locator = scope.locator(selector).first();
+        if ((await locator.count()) === 0) continue;
+
+        const href = await locator.getAttribute('href').catch(() => undefined);
+        if (href) return href;
+      }
+    }
+
+    return undefined;
+  }
+
+  private scopes(page: Page): LocatorScope[] {
+    return [
+      page,
+      ...page.frames().filter((frame) => frame !== page.mainFrame()),
+    ];
+  }
+
+  private async ensureAuthenticated(page: Page): Promise<void> {
+    const pageText = await this.safePageText(page);
+    const normalizedText = normalizeForMatch(pageText.join(' '));
+    const currentUrl = page.url();
+
+    if (
+      /homer\.sii\.cl/i.test(currentUrl) ||
+      hasSessionFailureMarker(normalizedText)
+    ) {
+      throw new SiiPortalSessionError(
+        await this.portalDebugMessage(
+          page,
+          'Sesion SII invalida o expirada en portal SII',
+        ),
+      );
+    }
+
+    if (hasAuthenticatedPortalMarker(normalizedText)) return;
+  }
+
+  private async waitAfterAction(page: Page): Promise<void> {
+    await page
+      .waitForLoadState('domcontentloaded', { timeout: shortTimeout() })
+      .catch(() => undefined);
+    await page.waitForTimeout(500);
+  }
+
+  private manualActionRequiredResult(
+    request: CafAcquisitionRequest,
+    detail: string,
+  ): CafAcquisitionResult {
+    return {
+      requestId: randomUUID(),
+      status: 'manual_action_required',
+      method: 'sii_portal_automation',
+      context: request.context,
+      tipoDTE: request.tipoDTE,
+      quantityRequested: request.quantity,
+      requestedAt: new Date(),
+      detail,
+      retryable: false,
+    };
+  }
+
+  private automationEnabled(): boolean {
+    return (
+      this.configService.get<string>('SII_PORTAL_CAF_AUTOMATION_ENABLED') ===
+      'true'
+    );
+  }
+
+  private httpScrapingEnabled(): boolean {
+    return (
+      this.configService.get<string>('SII_PORTAL_HTTP_SCRAPING_ENABLED') !==
+      'false'
+    );
+  }
+
+  private playwrightFallbackEnabled(): boolean {
+    return (
+      this.configService.get<string>('SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED') ===
+      'true'
+    );
+  }
+
+  private startUrl(environment: SiiEnvironment): string {
+    const configured =
+      environment === SiiEnvironment.Produccion
+        ? this.configService.get<string>('SII_PORTAL_START_URL_PRODUCCION')
+        : this.configService.get<string>('SII_PORTAL_START_URL_CERTIFICACION');
+    if (configured) return configured;
+
+    return environment === SiiEnvironment.Produccion
+      ? 'https://palena.sii.cl/cvc_cgi/dte/of_solicita_folios'
+      : 'https://maullin.sii.cl/cvc_cgi/dte/of_solicita_folios';
+  }
+
+  private portalBaseUrl(environment: SiiEnvironment): string {
+    return environment === SiiEnvironment.Produccion
+      ? 'https://palena.sii.cl'
+      : 'https://maullin.sii.cl';
+  }
+
+  private certificateLoginUrl(
+    environment: SiiEnvironment,
+    cert: CertificateMaterial,
+  ): string {
+    const configured =
+      environment === SiiEnvironment.Produccion
+        ? this.configService.get<string>('SII_PORTAL_CERT_LOGIN_URL_PRODUCCION')
+        : this.configService.get<string>(
+            'SII_PORTAL_CERT_LOGIN_URL_CERTIFICACION',
+          );
+    if (configured) return configured;
+
+    const targetUrl = this.startUrl(environment);
+    const { body, dv } = splitRut(cert.rutFirmante);
+    const loginUrl = new URL(
+      environment === SiiEnvironment.Produccion
+        ? 'https://hercules.sii.cl/cgi_AUT2000/CAutInicio.cgi'
+        : 'https://herculesr.sii.cl/cgi_AUT2000/CAutInicio.cgi',
+    );
+    loginUrl.searchParams.set('rutcntr', cert.rutFirmante);
+    loginUrl.searchParams.set('rut', body);
+    loginUrl.searchParams.set('dv', dv);
+    loginUrl.searchParams.set('referencia', targetUrl);
+    return loginUrl.toString();
+  }
+
+  private certificateOrigins(): string[] {
+    return this.selectorList(
+      'SII_PORTAL_CLIENT_CERT_ORIGINS',
+      DEFAULT_CERTIFICATE_ORIGINS,
+    );
+  }
+
+  private tokenCookieDomains(environment: SiiEnvironment): string[] {
+    const configured = this.selectorList('SII_PORTAL_TOKEN_COOKIE_DOMAINS', []);
+    if (configured.length > 0) return configured;
+
+    return environment === SiiEnvironment.Produccion
+      ? [
+          'palena.sii.cl',
+          'zeus.sii.cl',
+          'homer.sii.cl',
+          'www2.sii.cl',
+          'www4.sii.cl',
+        ]
+      : [
+          'maullin.sii.cl',
+          'zeusr.sii.cl',
+          'homer.sii.cl',
+          'www2.sii.cl',
+          'www4.sii.cl',
+        ];
+  }
+
+  private browserExecutablePath(): string | undefined {
+    const configured = this.configService.get<string>(
+      'SII_PORTAL_BROWSER_EXECUTABLE_PATH',
+    );
+    if (configured) return configured;
+
+    const edgePath =
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+    return existsSync(edgePath) ? edgePath : undefined;
+  }
+
+  private browserChannel(): string | undefined {
+    return this.configService.get<string>('SII_PORTAL_BROWSER_CHANNEL');
+  }
+
+  private browserClientCertificatesEnabled(): boolean {
+    return (
+      this.configService.get<string>('SII_PORTAL_BROWSER_CLIENT_CERT_ENABLED') ===
+      'true'
+    );
+  }
+
+  private headless(): boolean {
+    return this.configService.get<string>('SII_PORTAL_HEADLESS') !== 'false';
+  }
+
+  private timeoutMs(): number {
+    const configured = Number(
+      this.configService.get<string | number>('SII_PORTAL_TIMEOUT_MS'),
+    );
+    return Number.isInteger(configured) && configured > 0 ? configured : 60000;
+  }
+
+  private maxQuantity(): number {
+    const configured = Number(
+      this.configService.get<string | number>('SII_PORTAL_MAX_QUANTITY'),
+    );
+    return Number.isInteger(configured) && configured > 0 ? configured : 1000;
+  }
+
+  private selectorList(key: string, fallback: string[]): string[] {
+    const configured = this.configService.get<string>(key);
+    if (!configured) return fallback;
+
+    return configured
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  private safeErrorMessage(error: unknown): string {
+    if (!(error instanceof Error)) return 'Error desconocido en portal SII';
+
+    return redactSensitiveMessage(error.message);
+  }
+
+  private shouldRefreshSession(error: unknown, forceRefresh: boolean): boolean {
+    return (
+      !forceRefresh &&
+      (error instanceof SiiPortalSessionError ||
+        (error instanceof Error &&
+          /sesion sii invalida|sesion.*expirada|session.*expired/i.test(
+            normalizeForMatch(error.message),
+          )))
+    );
+  }
+
+  private async portalDebugMessage(
+    page: Page,
+    message: string,
+  ): Promise<string> {
+    if (this.configService.get<string>('SII_PORTAL_DEBUG_FORM') !== 'true') {
+      return message;
+    }
+
+    const snapshot = await this.safePortalSnapshot(page).catch(() => undefined);
+    if (!snapshot) return message;
+
+    return `${message}. Estado portal: ${snapshot}`;
+  }
+
+  private async safePortalSnapshot(page: Page): Promise<string> {
+    const title = await page.title().catch(() => '');
+    const frames = page
+      .frames()
+      .map((frame) => sanitizeUrl(frame.url()))
+      .filter(Boolean)
+      .slice(0, 10);
+
+    return JSON.stringify({
+      url: sanitizeUrl(page.url()),
+      title: safeDebugValue(title),
+      frames,
+      text: await this.safePageText(page),
+      controls: await this.safeControls(page),
+    });
+  }
+
+  private async safePageText(page: Page): Promise<string[]> {
+    const output: string[] = [];
+
+    for (const scope of this.scopes(page)) {
+      const text = await scope
+        .locator('body')
+        .innerText({ timeout: shortTimeout() })
+        .catch(() => '');
+      const safeText = safeDebugValue(text.replace(/\s+/g, ' ').trim(), 500);
+      if (safeText) output.push(safeText);
+    }
+
+    return output.slice(0, 5);
+  }
+
+  private async safeControls(page: Page): Promise<SafeControl[]> {
+    const output: SafeControl[] = [];
+
+    for (const scope of this.scopes(page)) {
+      const controls = await scope
+        .locator('input, select, button, textarea, a, label, area, form, img')
+        .evaluateAll((elements) =>
+          elements.slice(0, MAX_DEBUG_CONTROLS).map((element) => {
+            const htmlElement = element as HTMLElement;
+            const tag = element.tagName.toLowerCase();
+            const readableText = ['a', 'area', 'button', 'label'].includes(tag)
+              ? htmlElement.innerText?.replace(/\s+/g, ' ').trim().slice(0, 80)
+              : undefined;
+
+            return {
+              tag,
+              type: element.getAttribute('type') ?? undefined,
+              name: element.getAttribute('name') ?? undefined,
+              id: element.getAttribute('id') ?? undefined,
+              ariaLabel: element.getAttribute('aria-label') ?? undefined,
+              alt: element.getAttribute('alt') ?? undefined,
+              href: element.getAttribute('href') ?? undefined,
+              action: element.getAttribute('action') ?? undefined,
+              useMap: element.getAttribute('usemap') ?? undefined,
+              text: readableText,
+            };
+          }),
+        )
+        .catch(() => []);
+
+      for (const control of controls) {
+        output.push({
+          frameUrl: sanitizeUrl(scope.url()),
+          tag: safeDebugValue(control.tag),
+          type: safeDebugValue(control.type),
+          name: safeDebugValue(control.name),
+          id: safeDebugValue(control.id),
+          ariaLabel: safeDebugValue(control.ariaLabel),
+          alt: safeDebugValue(control.alt),
+          href: safeDebugAttribute(control.href),
+          action: safeDebugAttribute(control.action),
+          useMap: safeDebugValue(control.useMap),
+          text: safeDebugValue(control.text),
+        });
+        if (output.length >= MAX_DEBUG_CONTROLS) return output;
+      }
+    }
+
+    return output;
+  }
+}
+
+interface SafeControl {
+  frameUrl: string;
+  tag?: string;
+  type?: string;
+  name?: string;
+  id?: string;
+  ariaLabel?: string;
+  alt?: string;
+  href?: string;
+  action?: string;
+  useMap?: string;
+  text?: string;
+}
+
+function isRedirectStatus(status: number): boolean {
+  return [301, 302, 303, 307, 308].includes(status);
+}
+
+function storeSetCookies(
+  jar: Map<string, BrowserCookie>,
+  setCookieHeader: string[] | string | undefined,
+  currentUrl: string,
+): void {
+  const headers = Array.isArray(setCookieHeader)
+    ? setCookieHeader
+    : setCookieHeader
+      ? [setCookieHeader]
+      : [];
+
+  for (const header of headers) {
+    const cookie = parseSetCookie(header, currentUrl);
+    if (!cookie) continue;
+    jar.set(cookieKey(cookie), cookie);
+  }
+}
+
+function parseSetCookie(
+  header: string,
+  currentUrl: string,
+): BrowserCookie | undefined {
+  const [nameValue, ...attributeParts] = header.split(';');
+  const separatorIndex = nameValue.indexOf('=');
+  if (separatorIndex <= 0) return undefined;
+
+  const url = new URL(currentUrl);
+  const cookie: BrowserCookie = {
+    name: nameValue.slice(0, separatorIndex).trim(),
+    value: nameValue.slice(separatorIndex + 1).trim(),
+    domain: url.hostname,
+    path: '/',
+    httpOnly: false,
+    secure: url.protocol === 'https:',
+    sameSite: 'Lax',
+  };
+
+  if (!cookie.name) return undefined;
+  if (cookie.name.toLowerCase() === 'path') return undefined;
+
+  for (const rawAttribute of attributeParts) {
+    const [rawName, ...rawValueParts] = rawAttribute.trim().split('=');
+    const name = rawName.toLowerCase();
+    const value = rawValueParts.join('=').trim();
+
+    if (name === 'domain' && value) cookie.domain = value.toLowerCase();
+    if (name === 'path' && value) cookie.path = value;
+    if (name === 'secure') cookie.secure = true;
+    if (name === 'httponly') cookie.httpOnly = true;
+    if (name === 'samesite') cookie.sameSite = normalizeSameSite(value);
+    if (name === 'max-age' && value === '0') return undefined;
+  }
+
+  return cookie;
+}
+
+function normalizeSameSite(value: string): 'Strict' | 'Lax' | 'None' {
+  if (/^strict$/i.test(value)) return 'Strict';
+  if (/^none$/i.test(value)) return 'None';
+  return 'Lax';
+}
+
+function cookieKey(cookie: BrowserCookie): string {
+  return `${cookie.domain}:${cookie.path}:${cookie.name}`;
+}
+
+function cookieHeaderForUrl(
+  jar: Map<string, BrowserCookie>,
+  currentUrl: string,
+): string {
+  const url = new URL(currentUrl);
+  return Array.from(jar.values())
+    .filter((cookie) => cookieMatchesHost(cookie, url.hostname))
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ');
+}
+
+function cookieMatchesHost(cookie: BrowserCookie, host: string): boolean {
+  const normalizedHost = host.toLowerCase();
+  const normalizedDomain = cookie.domain.replace(/^\./, '').toLowerCase();
+  return (
+    normalizedHost === normalizedDomain ||
+    normalizedHost.endsWith(`.${normalizedDomain}`)
+  );
+}
+
+function domainMatchesSii(domain: string): boolean {
+  const normalizedDomain = domain.replace(/^\./, '').toLowerCase();
+  return (
+    normalizedDomain === 'sii.cl' || normalizedDomain.endsWith('.sii.cl')
+  );
+}
+
+function continueSelectors(): string[] {
+  return [
+    'input[type="submit"][value*="Continuar" i]',
+    'input[type="button"][value*="Continuar" i]',
+    'button:has-text("Continuar")',
+  ];
+}
+
+function folioMenuSelectors(): string[] {
+  return [
+    'a[href*="of_genera_folio"]',
+    'area[href*="of_genera_folio"]',
+    'a:has-text("Solicitud de Timbraje")',
+    'area[alt*="Solicitud" i]',
+    'area[alt*="Timbraje" i]',
+  ];
+}
+
+function requestSelectors(): string[] {
+  return [
+    'input[type="submit"][value*="Solicitar" i]',
+    'input[type="button"][value*="Solicitar" i]',
+    'button:has-text("Solicitar")',
+  ];
+}
+
+function confirmSelectors(): string[] {
+  return [
+    'a:has-text("Descargar")',
+    'a:has-text("Obtener")',
+    'input[type="submit"][value*="Obtener" i]',
+    'input[type="button"][value*="Obtener" i]',
+    'input[type="submit"][value*="Confirmar" i]',
+    'input[type="button"][value*="Confirmar" i]',
+    'button:has-text("Obtener")',
+    'button:has-text("Descargar")',
+    'button:has-text("Confirmar")',
+  ];
+}
+
+function rutBodySelectors(): string[] {
+  return [
+    'input[name="RUT_EMP"]',
+    'input[name="RUT"]',
+    'input[name*="RUT"][maxlength="8"]',
+  ];
+}
+
+function rutDvSelectors(): string[] {
+  return [
+    'input[name="DV_EMP"]',
+    'input[name="DV"]',
+    'input[name*="DV"][maxlength="1"]',
+  ];
+}
+
+function rutSingleSelectors(): string[] {
+  return ['input[name*="RUT"]', 'input[id*="RUT"]', 'input[type="text"]'];
+}
+
+function tipoDteLabels(tipoDTE: number): string[] {
+  const labels: Record<number, string[]> = {
+    33: ['33', 'FACTURA ELECTRONICA'],
+    39: ['39', 'BOLETA ELECTRONICA'],
+    41: ['41', 'BOLETA EXENTA ELECTRONICA'],
+    56: ['56', 'NOTA DE DEBITO ELECTRONICA'],
+    61: ['61', 'NOTA DE CREDITO ELECTRONICA'],
+  };
+
+  return labels[tipoDTE] ?? [String(tipoDTE)];
+}
+
+async function isUsable(locator: {
+  count(): Promise<number>;
+  isVisible(options?: { timeout?: number }): Promise<boolean>;
+}): Promise<boolean> {
+  try {
+    return (
+      (await locator.count()) > 0 && (await locator.isVisible({ timeout: 500 }))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function splitRut(rut: string): { body: string; dv: string } {
+  const normalized = rut.replace(/\./g, '').toUpperCase();
+  const [body, dv] = normalized.includes('-')
+    ? normalized.split('-')
+    : [normalized.slice(0, -1), normalized.slice(-1)];
+
+  return { body, dv };
+}
+
+function extractCafXml(value: string): string | undefined {
+  return (
+    value.match(CAF_XML_PATTERN)?.[0] ??
+    decodeHtmlEntities(value).match(CAF_XML_PATTERN)?.[0]
+  );
+}
+
+function findCafDownloadUrl(html: string, baseUrl: string): string | undefined {
+  for (const match of html.matchAll(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    const href = decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? '');
+    if (!/(caf|xml|folio|genera)/i.test(href)) continue;
+    return new URL(href, baseUrl).toString();
+  }
+
+  return undefined;
+}
+
+function findFormActionUrl(
+  html: string,
+  baseUrl: string,
+  actionPattern: RegExp,
+): string | undefined {
+  for (const match of html.matchAll(/<form\b[^>]*>/gi)) {
+    const action = extractHtmlAttribute(match[0], 'action');
+    if (!action || !actionPattern.test(action)) continue;
+    return new URL(action, baseUrl).toString();
+  }
+
+  return undefined;
+}
+
+function extractFinalResponseHints(html: string): string {
+  const forms = Array.from(html.matchAll(/<form\b[^>]*>/gi))
+    .map((match) => extractHtmlAttribute(match[0], 'action'))
+    .filter((value): value is string => Boolean(value))
+    .map((value) => safeDebugAttribute(value))
+    .slice(0, 5);
+  const hrefs = Array.from(
+    html.matchAll(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi),
+  )
+    .map((match) => decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? ''))
+    .map((value) => safeDebugAttribute(value))
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 10);
+  const inputs = Array.from(html.matchAll(/<input\b([^>]*)>/gi))
+    .map((match) => extractHtmlAttribute(match[1], 'name'))
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 20);
+
+  return `Hints: ${JSON.stringify({ forms, hrefs, inputs })}`;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    )
+    .replace(/&#(\d+);/g, (_, code: string) =>
+      String.fromCharCode(Number.parseInt(code, 10)),
+    )
+    .replace(/&amp;/gi, '&');
+}
+
+function extractInputValues(html: string): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const match of html.matchAll(/<input\b([^>]*)>/gi)) {
+    const attributes = match[1];
+    const name = extractHtmlAttribute(attributes, 'name');
+    if (!name) continue;
+    output[name] = extractHtmlAttribute(attributes, 'value') ?? '';
+  }
+
+  return output;
+}
+
+function extractHtmlAttribute(
+  attributes: string,
+  attributeName: string,
+): string | undefined {
+  const pattern = new RegExp(
+    `${attributeName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+    'i',
+  );
+  const match = attributes.match(pattern);
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function shortTimeout(): number {
+  return 3000;
+}
+
+function normalizeForMatch(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function sanitizeUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return safeDebugValue(value) ?? '';
+  }
+}
+
+function resolveUrl(value: string, baseUrl: string): string {
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return value;
+  }
+}
+
+function safeDebugValue(
+  value: string | undefined | null,
+  maxLength = 120,
+): string | undefined {
+  if (!value) return undefined;
+
+  return redactSensitiveMessage(value)
+    .replace(/\b\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]\b/g, '[RUT]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[EMAIL]')
+    .slice(0, maxLength);
+}
+
+function safeDebugAttribute(
+  value: string | undefined | null,
+): string | undefined {
+  if (!value) return undefined;
+
+  const withoutQuery = value.replace(/[?#].*$/, '');
+  if (/^https?:\/\//i.test(withoutQuery)) {
+    return sanitizeUrl(withoutQuery);
+  }
+
+  return safeDebugValue(withoutQuery);
+}
+
+function hasAuthenticatedPortalMarker(normalizedText: string): boolean {
+  return /CERRAR SESION|PAGINA SEGURA|SOLICITUD DE TIMBRAJE/.test(
+    normalizedText,
+  );
+}
+
+function hasSessionFailureMarker(normalizedText: string): boolean {
+  return /INGRESE SU RUT|CLAVE TRIBUTARIA|NO AUTORIZADO|SESION EXPIRADA|NO SE ENCUENTRA AUTENTICADO|ACCESO A SERVIDOR POR CERTIFICADO/.test(
+    normalizedText,
+  );
+}
+
+function redactSensitiveMessage(message: string): string {
+  const sanitized = sanitizePublicPayload(message);
+  return sanitized
+    .replace(/<AUTORIZACION\b[\s\S]*?<\/AUTORIZACION>/gi, '[REDACTED]')
+    .replace(/<CAF\b[\s\S]*?<\/CAF>/gi, '[REDACTED]')
+    .replace(
+      /\b(cookie|token|password|passphrase|pfx|p12)\b\s*[:=]\s*[^;<\s]+/gi,
+      '[REDACTED]',
+    )
+    .replace(
+      /cookie|token|password|passphrase|private key|pfx|p12|RSASK/gi,
+      '[REDACTED]',
+    );
+}
+
+class SiiPortalSessionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SiiPortalSessionError';
+  }
+}

@@ -21,7 +21,11 @@ export function validateUploadedFile(
   file: Express.Multer.File | undefined,
   options: FileValidationOptions,
 ): asserts file is Express.Multer.File {
-  const { allowedExtensions, maxSizeBytes = 5 * 1024 * 1024, fieldName } = options;
+  const {
+    allowedExtensions,
+    maxSizeBytes = 5 * 1024 * 1024,
+    fieldName,
+  } = options;
 
   if (!file) {
     throw new BadRequestException(`Se requiere el archivo "${fieldName}"`);

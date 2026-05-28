@@ -1,0 +1,1 @@
+export const FISCAL_FOLIO_PROVIDER = Symbol('FISCAL_FOLIO_PROVIDER');

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>SII · SimpleAPI — POS Integration</title>
+  <title>SII - sii-engine - POS Integration</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
   <style>
@@ -375,7 +375,7 @@
     <div class="logo">
       <div class="logo-icon">🧾</div>
       <div class="logo-text">
-        <h1>SII · SimpleAPI</h1>
+        <h1>SII - sii-engine</h1>
         <p>Módulo DTE para Sistema POS · NestJS</p>
       </div>
     </div>
@@ -389,13 +389,13 @@
   <section class="hero fade-in delay-1">
     <div class="hero-tag">⚡ Integración activa</div>
     <h2>Emisión de Boletas<br/>y Facturas Electrónicas</h2>
-    <p>Módulo NestJS conectado a <strong>SimpleAPI</strong> para generar, timbrar y firmar DTE directamente ante el Servicio de Impuestos Internos de Chile.</p>
+    <p>Módulo NestJS conectado directamente a <strong>sii-engine</strong> para generar, firmar, enviar y consultar documentos ante el Servicio de Impuestos Internos de Chile.</p>
   </section>
 
   <!-- STATS -->
   <div class="stats fade-in delay-2">
     <div class="stat-card">
-      <div class="val" style="color: var(--accent)">5</div>
+      <div class="val" style="color: var(--accent)">4</div>
       <div class="lbl">Endpoints REST</div>
     </div>
     <div class="stat-card">
@@ -403,8 +403,8 @@
       <div class="lbl">Boleta Electrónica</div>
     </div>
     <div class="stat-card">
-      <div class="val" style="color: var(--accent2)">33</div>
-      <div class="lbl">Factura Electrónica</div>
+      <div class="val" style="color: var(--accent2)">RVD</div>
+      <div class="lbl">Resumen Diario</div>
     </div>
     <div class="stat-card">
       <div class="val" style="color: var(--yellow)">0</div>
@@ -420,7 +420,7 @@
   <div class="health-panel fade-in delay-2">
     <div class="health-left">
       <h3>🔌 Test de Conexión</h3>
-      <p>Verifica la conectividad con api.simpleapi.cl</p>
+      <p>Verifica que el backend fiscal directo este operativo</p>
     </div>
     <div class="health-result" id="healthResult">Haz clic en "Probar" para verificar...</div>
     <button class="test-btn" onclick="runHealthCheck()">Probar conexión</button>
@@ -433,9 +433,9 @@
     <div class="endpoint-card get">
       <div class="ep-header">
         <span class="method-badge GET">GET</span>
-        <span class="ep-path">/api/sii/health</span>
+        <span class="ep-path">/api/fiscal/health</span>
       </div>
-      <p class="ep-desc">Verifica la configuración y conectividad con SimpleAPI. Retorna el ambiente activo (certificación o producción).</p>
+      <p class="ep-desc">Verifica que el modulo fiscal directo esta cargado sin proveedores externos.</p>
       <div class="ep-fields">
         <span class="field-chip">Sin parámetros</span>
       </div>
@@ -444,53 +444,41 @@
     <div class="endpoint-card post">
       <div class="ep-header">
         <span class="method-badge POST">POST</span>
-        <span class="ep-path">/api/sii/boleta</span>
+        <span class="ep-path">/api/fiscal/documents/boletas</span>
       </div>
-      <p class="ep-desc">Genera y timbra una <strong>Boleta Electrónica tipo 39</strong> a través de SimpleAPI. Retorna el DTE firmado en XML.</p>
+      <p class="ep-desc">Genera, firma y envia una <strong>Boleta Electronica tipo 39</strong> usando sii-engine. El certificado y CAF se resuelven por providers del host.</p>
       <div class="ep-fields">
-        <span class="field-chip required">datos (JSON)</span>
-        <span class="field-chip file">🔒 certificado.pfx</span>
-        <span class="field-chip file">📄 caf_39.xml</span>
+        <span class="field-chip required">context</span>
+        <span class="field-chip required">document</span>
+        <span class="field-chip">x-api-key</span>
       </div>
     </div>
 
     <div class="endpoint-card post">
       <div class="ep-header">
         <span class="method-badge POST">POST</span>
-        <span class="ep-path">/api/sii/factura</span>
+        <span class="ep-path">/api/fiscal/rvd</span>
       </div>
-      <p class="ep-desc">Genera y timbra una <strong>Factura Electrónica tipo 33</strong> a través de SimpleAPI. Retorna el DTE firmado en XML.</p>
+      <p class="ep-desc">Construye, firma y envia el Resumen de Ventas Diarias de boletas electronicas.</p>
       <div class="ep-fields">
-        <span class="field-chip required">datos (JSON)</span>
-        <span class="field-chip file">🔒 certificado.pfx</span>
-        <span class="field-chip file">📄 caf_33.xml</span>
+        <span class="field-chip required">context</span>
+        <span class="field-chip required">fecha</span>
+        <span class="field-chip required">totales</span>
+        <span class="field-chip">x-api-key</span>
       </div>
     </div>
 
     <div class="endpoint-card post">
       <div class="ep-header">
         <span class="method-badge POST">POST</span>
-        <span class="ep-path">/api/sii/estado-envio/:trackId</span>
+        <span class="ep-path">/api/fiscal/polling/send-status</span>
       </div>
-      <p class="ep-desc">Consulta el estado de un envío al SII usando el <strong>TrackID</strong> obtenido al enviar el sobre DTE.</p>
+      <p class="ep-desc">Consulta una vez el estado de un envio por <strong>trackId</strong>, normaliza el estado y sugiere el proximo polling.</p>
       <div class="ep-fields">
-        <span class="field-chip required">:trackId</span>
-        <span class="field-chip required">rutEmpresa</span>
-        <span class="field-chip file">🔒 certificado.pfx</span>
-      </div>
-    </div>
-
-    <div class="endpoint-card post">
-      <div class="ep-header">
-        <span class="method-badge POST">POST</span>
-        <span class="ep-path">/api/sii/estado-dte</span>
-      </div>
-      <p class="ep-desc">Consulta el estado de un DTE individual directamente ante el SII (DOK, FAU, FNA, etc.).</p>
-      <div class="ep-fields">
-        <span class="field-chip required">folio</span>
-        <span class="field-chip required">tipoDte</span>
-        <span class="field-chip required">total</span>
-        <span class="field-chip file">🔒 certificado.pfx</span>
+        <span class="field-chip required">context</span>
+        <span class="field-chip required">trackId</span>
+        <span class="field-chip">attempt</span>
+        <span class="field-chip">x-api-key</span>
       </div>
     </div>
 
@@ -507,12 +495,12 @@
       <div class="flow-arrow">→</div>
       <div class="flow-step">
         <div class="flow-bubble b2">📦</div>
-        <div class="flow-label">POST<br/>/api/sii/boleta</div>
+        <div class="flow-label">POST<br/>/api/fiscal/documents/boletas</div>
       </div>
       <div class="flow-arrow">→</div>
       <div class="flow-step">
         <div class="flow-bubble b3">🔐</div>
-        <div class="flow-label">SimpleAPI<br/>firma y timbra</div>
+        <div class="flow-label">sii-engine<br/>firma y timbra</div>
       </div>
       <div class="flow-arrow">→</div>
       <div class="flow-step">
@@ -534,96 +522,66 @@
     <!-- BOLETA -->
     <div class="demo-card">
       <div class="demo-card-header">
-        <h3><div class="icon-badge blue">🧾</div> Boleta Electrónica (tipo 39)</h3>
+        <h3><div class="icon-badge blue">🧾</div> Boleta Electronica (tipo 39)</h3>
         <button class="copy-btn" onclick="copyCode('boleta')">Copiar</button>
       </div>
-      <pre id="boleta"><span class="comment">// multipart/form-data — campo: "datos"</span>
+      <pre id="boleta"><span class="comment">// application/json - sin PFX ni CAF por emision</span>
 {
-  <span class="key">"IdentificacionDTE"</span>: {
-    <span class="key">"TipoDTE"</span>: <span class="num">39</span>,
-    <span class="key">"Folio"</span>: <span class="num">1</span>,
-    <span class="key">"FechaEmision"</span>: <span class="str">"2026-04-19"</span>,
-    <span class="key">"IndicadorServicio"</span>: <span class="num">3</span>
+  <span class="key">"context"</span>: {
+    <span class="key">"environment"</span>: <span class="str">"CERTIFICATION"</span>,
+    <span class="key">"rutEmisor"</span>: <span class="str">"12345678-9"</span>,
+    <span class="key">"fechaResolucion"</span>: <span class="str">"2026-01-01"</span>,
+    <span class="key">"nroResolucion"</span>: <span class="num">0</span>,
+    <span class="key">"tenantId"</span>: <span class="str">"tenant-demo"</span>,
+    <span class="key">"certificateRef"</span>: <span class="str">"default"</span>
   },
-  <span class="key">"Emisor"</span>: {
-    <span class="key">"Rut"</span>: <span class="str">"12345678-9"</span>,
-    <span class="key">"RazonSocialBoleta"</span>: <span class="str">"Mi Empresa SpA"</span>,
-    <span class="key">"GiroBoleta"</span>: <span class="str">"Comercio al por menor"</span>,
-    <span class="key">"DireccionOrigen"</span>: <span class="str">"Av. Principal 123"</span>,
-    <span class="key">"ComunaOrigen"</span>: <span class="str">"Santiago"</span>
-  },
-  <span class="key">"Receptor"</span>: {
-    <span class="key">"Rut"</span>: <span class="str">"66.666.666-6"</span>
-  },
-  <span class="key">"Totales"</span>: {
-    <span class="key">"MontoTotal"</span>: <span class="num">11900</span>,
-    <span class="key">"MontoNeto"</span>: <span class="num">10000</span>,
-    <span class="key">"IVA"</span>: <span class="num">1900</span>
-  },
-  <span class="key">"Detalles"</span>: [
-    {
-      <span class="key">"Nombre"</span>: <span class="str">"Producto A"</span>,
-      <span class="key">"Cantidad"</span>: <span class="num">2</span>,
-      <span class="key">"Precio"</span>: <span class="num">5950</span>,
+  <span class="key">"document"</span>: {
+    <span class="key">"Encabezado"</span>: {
+      <span class="key">"IdDoc"</span>: {
+        <span class="key">"TipoDTE"</span>: <span class="num">39</span>,
+        <span class="key">"FchEmis"</span>: <span class="str">"2026-05-19"</span>,
+        <span class="key">"IndServicio"</span>: <span class="num">3</span>
+      },
+      <span class="key">"Emisor"</span>: {
+        <span class="key">"RUTEmisor"</span>: <span class="str">"12345678-9"</span>,
+        <span class="key">"RznSocEmisor"</span>: <span class="str">"Mi Empresa SpA"</span>
+      },
+      <span class="key">"Receptor"</span>: {
+        <span class="key">"RUTRecep"</span>: <span class="str">"66666666-6"</span>
+      },
+      <span class="key">"Totales"</span>: {
+        <span class="key">"MntTotal"</span>: <span class="num">11900</span>
+      }
+    },
+    <span class="key">"Detalle"</span>: {
+      <span class="key">"NroLinDet"</span>: <span class="num">1</span>,
+      <span class="key">"NmbItem"</span>: <span class="str">"Producto A"</span>,
+      <span class="key">"QtyItem"</span>: <span class="num">2</span>,
+      <span class="key">"PrcItem"</span>: <span class="num">5950</span>,
       <span class="key">"MontoItem"</span>: <span class="num">11900</span>
     }
-  ],
-  <span class="key">"Certificado"</span>: {
-    <span class="key">"Rut"</span>: <span class="str">"12345678-9"</span>,
-    <span class="key">"Password"</span>: <span class="str">"mi_contraseña"</span>
   }
 }</pre>
     </div>
 
-    <!-- FACTURA -->
+    <!-- POLLING -->
     <div class="demo-card">
       <div class="demo-card-header">
-        <h3><div class="icon-badge purple">📄</div> Factura Electrónica (tipo 33)</h3>
+        <h3><div class="icon-badge purple">📄</div> Polling de envio</h3>
         <button class="copy-btn" onclick="copyCode('factura')">Copiar</button>
       </div>
-      <pre id="factura"><span class="comment">// multipart/form-data — campo: "datos"</span>
+      <pre id="factura"><span class="comment">// application/json</span>
 {
-  <span class="key">"IdentificacionDTE"</span>: {
-    <span class="key">"TipoDTE"</span>: <span class="num">33</span>,
-    <span class="key">"Folio"</span>: <span class="num">1</span>,
-    <span class="key">"FechaEmision"</span>: <span class="str">"2026-04-19"</span>,
-    <span class="key">"FormaPago"</span>: <span class="num">1</span>,
-    <span class="key">"MedioPago"</span>: <span class="str">"EF"</span>
+  <span class="key">"context"</span>: {
+    <span class="key">"environment"</span>: <span class="str">"CERTIFICATION"</span>,
+    <span class="key">"rutEmisor"</span>: <span class="str">"12345678-9"</span>,
+    <span class="key">"fechaResolucion"</span>: <span class="str">"2026-01-01"</span>,
+    <span class="key">"nroResolucion"</span>: <span class="num">0</span>,
+    <span class="key">"tenantId"</span>: <span class="str">"tenant-demo"</span>,
+    <span class="key">"certificateRef"</span>: <span class="str">"default"</span>
   },
-  <span class="key">"Emisor"</span>: {
-    <span class="key">"Rut"</span>: <span class="str">"12345678-9"</span>,
-    <span class="key">"RazonSocial"</span>: <span class="str">"Mi Empresa SpA"</span>,
-    <span class="key">"Giro"</span>: <span class="str">"Comercio al por menor"</span>,
-    <span class="key">"ActividadEconomica"</span>: <span class="num">477100</span>,
-    <span class="key">"DireccionOrigen"</span>: <span class="str">"Av. Principal 123"</span>,
-    <span class="key">"ComunaOrigen"</span>: <span class="str">"Santiago"</span>
-  },
-  <span class="key">"Receptor"</span>: {
-    <span class="key">"Rut"</span>: <span class="str">"87654321-0"</span>,
-    <span class="key">"RazonSocial"</span>: <span class="str">"Cliente Empresa SA"</span>,
-    <span class="key">"Direccion"</span>: <span class="str">"Calle Cliente 456"</span>,
-    <span class="key">"Comuna"</span>: <span class="str">"Providencia"</span>,
-    <span class="key">"Giro"</span>: <span class="str">"Servicios"</span>,
-    <span class="key">"CorreoElectronico"</span>: <span class="str">"cliente@empresa.cl"</span>
-  },
-  <span class="key">"Totales"</span>: {
-    <span class="key">"MontoTotal"</span>: <span class="num">119000</span>,
-    <span class="key">"MontoNeto"</span>: <span class="num">100000</span>,
-    <span class="key">"IVA"</span>: <span class="num">19000</span>,
-    <span class="key">"TasaIVA"</span>: <span class="num">19</span>
-  },
-  <span class="key">"Detalles"</span>: [
-    {
-      <span class="key">"Nombre"</span>: <span class="str">"Servicio de Consultoría"</span>,
-      <span class="key">"Cantidad"</span>: <span class="num">1</span>,
-      <span class="key">"Precio"</span>: <span class="num">100000</span>,
-      <span class="key">"MontoItem"</span>: <span class="num">100000</span>
-    }
-  ],
-  <span class="key">"Certificado"</span>: {
-    <span class="key">"Rut"</span>: <span class="str">"12345678-9"</span>,
-    <span class="key">"Password"</span>: <span class="str">"mi_contraseña"</span>
-  }
+  <span class="key">"trackId"</span>: <span class="str">"1234567890"</span>,
+  <span class="key">"attempt"</span>: <span class="num">0</span>
 }</pre>
     </div>
 
@@ -632,10 +590,10 @@
   <!-- FOOTER -->
   <footer class="fade-in">
     <p>
-      🧾 Módulo SII · <strong>SimpleAPI</strong> ·
-      <a href="https://documentacion.simpleapi.cl" target="_blank">Documentación</a> ·
+      🧾 Módulo SII · <strong>sii-engine</strong> ·
+      <a href="/api" target="_blank">Swagger local</a> ·
       Ambiente: <span style="color:var(--yellow)">Certificación (0)</span> ·
-      API Key: <span style="font-family:'JetBrains Mono',monospace;color:var(--muted)">2985-W870-●●●●</span>
+      API Key: <span style="font-family:'JetBrains Mono',monospace;color:var(--muted)">solo endpoints protegidos</span>
     </p>
   </footer>
 
@@ -649,7 +607,7 @@
     const el = document.getElementById('healthResult');
     el.innerHTML = '<span style="color:#64748b">Consultando...</span>';
     try {
-      const res = await fetch('/api/sii/sesion/health');
+      const res = await fetch('/api/fiscal/health');
       const data = await res.json();
       el.innerHTML = `<span style="color:#34d399">✓</span> &nbsp;${JSON.stringify(data, null, 0).replace(/,/g, ' · ').replace(/[{}]/g, '')}`;
     } catch {

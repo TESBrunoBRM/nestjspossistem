@@ -7,10 +7,13 @@ import { validate } from 'class-validator';
 const MAX_JSON_LENGTH = 1 * 1024 * 1024;
 
 @Injectable()
-export class ParseJsonPipe<T extends object> implements PipeTransform<string, Promise<T>> {
+export class ParseJsonPipe<T extends object> implements PipeTransform<
+  string,
+  Promise<T>
+> {
   constructor(
     private readonly targetType: Type<T>,
-    private readonly options: { strict?: boolean } = { strict: true }
+    private readonly options: { strict?: boolean } = { strict: true },
   ) {}
 
   async transform(value: string): Promise<T> {
@@ -30,13 +33,19 @@ export class ParseJsonPipe<T extends object> implements PipeTransform<string, Pr
 
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(value);
+      parsed = JSON.parse(value) as Record<string, unknown>;
     } catch {
       throw new BadRequestException('El campo no es un JSON válido');
     }
 
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      throw new BadRequestException('El JSON debe ser un objeto, no un arreglo ni un valor primitivo');
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      throw new BadRequestException(
+        'El JSON debe ser un objeto, no un arreglo ni un valor primitivo',
+      );
     }
 
     const object = plainToInstance(this.targetType, parsed);
@@ -60,10 +69,17 @@ export class ParseJsonPipe<T extends object> implements PipeTransform<string, Pr
    * Aplana errores de validación recursivos para sub-DTOs anidados.
    */
   private flattenErrors(
-    errors: Array<{ property: string; constraints?: Record<string, string>; children?: unknown[] }>,
+    errors: Array<{
+      property: string;
+      constraints?: Record<string, string>;
+      children?: unknown[];
+    }>,
     parentPath = '',
   ): Array<{ property: string; constraints?: Record<string, string> }> {
-    const result: Array<{ property: string; constraints?: Record<string, string> }> = [];
+    const result: Array<{
+      property: string;
+      constraints?: Record<string, string>;
+    }> = [];
 
     for (const err of errors) {
       const path = parentPath ? `${parentPath}.${err.property}` : err.property;
@@ -72,10 +88,18 @@ export class ParseJsonPipe<T extends object> implements PipeTransform<string, Pr
         result.push({ property: path, constraints: err.constraints });
       }
 
-      if (err.children && Array.isArray(err.children) && err.children.length > 0) {
+      if (
+        err.children &&
+        Array.isArray(err.children) &&
+        err.children.length > 0
+      ) {
         result.push(
           ...this.flattenErrors(
-            err.children as Array<{ property: string; constraints?: Record<string, string>; children?: unknown[] }>,
+            err.children as Array<{
+              property: string;
+              constraints?: Record<string, string>;
+              children?: unknown[];
+            }>,
             path,
           ),
         );

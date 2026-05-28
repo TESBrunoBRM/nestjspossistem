@@ -5,6 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { timingSafeEqual } from 'crypto';
 import { Request } from 'express';
 
 @Injectable()
@@ -33,10 +34,21 @@ export class ApiKeyGuard implements CanActivate {
       );
     }
 
-    if (providedApiKey !== validApiKey) {
+    if (!safeCompare(providedApiKey, validApiKey)) {
       throw new UnauthorizedException('Acceso no autorizado: API Key inválida');
     }
 
     return true;
   }
+}
+
+function safeCompare(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
 }

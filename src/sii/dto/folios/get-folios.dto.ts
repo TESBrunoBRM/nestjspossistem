@@ -1,1 +1,0 @@
-export { FoliosRequestDto } from '../utilidades-folios.dto';

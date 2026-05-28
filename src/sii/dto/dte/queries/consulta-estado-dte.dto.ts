@@ -1,1 +1,0 @@
-export { ConsultaEstadoDteDto } from '../../consulta-estado-dte.dto';

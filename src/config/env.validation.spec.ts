@@ -1,0 +1,42 @@
+import 'reflect-metadata';
+import { validateEnv } from './env.validation';
+
+describe('validateEnv', () => {
+  it('rejects legacy external API variables', () => {
+    const legacyKey = ['SIMPLE', 'API_BASE_URL'].join('');
+
+    expect(() =>
+      validateEnv({
+        NODE_ENV: 'test',
+        API_KEY_FRONTEND: 'test-key',
+        [legacyKey]: 'https://provider.example',
+      }),
+    ).toThrow('variables externas heredadas no permitidas');
+  });
+
+  it('rejects fixed fiscal bootstrap variables in production', () => {
+    expect(() =>
+      validateEnv({
+        NODE_ENV: 'production',
+        API_KEY_FRONTEND: 'prod-key',
+        SII_RUT_EMISOR: '76123456-7',
+      }),
+    ).toThrow('bootstrap fiscal por .env no permitido en produccion');
+  });
+
+  it('allows local fiscal bootstrap outside production', () => {
+    expect(
+      validateEnv({
+        NODE_ENV: 'test',
+        API_KEY_FRONTEND: 'test-key',
+        SII_RUT_EMISOR: '76123456-7',
+        SII_AMBIENTE: 0,
+      }),
+    ).toMatchObject({
+      NODE_ENV: 'test',
+      API_KEY_FRONTEND: 'test-key',
+      SII_RUT_EMISOR: '76123456-7',
+      SII_AMBIENTE: 0,
+    });
+  });
+});

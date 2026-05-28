@@ -1,1 +1,0 @@
-export { SimpleApiResponseDto } from '../simple-api-response.dto';
