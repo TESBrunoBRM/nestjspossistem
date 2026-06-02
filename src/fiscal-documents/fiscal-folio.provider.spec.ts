@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { access, readFile } from 'fs/promises';
 import { SiiEnvironment, TipoDTE, type IssuerContext } from 'sii-engine';
+import { resolveProjectPath } from '../common/utils/project-path.util';
+import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 import { FiscalFolioProvider } from './fiscal-folio.provider';
 
 jest.mock('fs/promises', () => ({
@@ -19,6 +21,10 @@ const context: IssuerContext = {
   nroResolucion: 0,
 };
 
+function mockCustodyService(): FiscalCustodyService {
+  return {} as FiscalCustodyService;
+}
+
 describe('FiscalFolioProvider', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -26,7 +32,10 @@ describe('FiscalFolioProvider', () => {
   });
 
   it('reserves folios in memory without duplicates', async () => {
-    const provider = new FiscalFolioProvider(mockConfigService({}));
+    const provider = new FiscalFolioProvider(
+      mockConfigService({}),
+      mockCustodyService(),
+    );
     await provider.addCafXml(context, cafXml('11111111-1', 1, 2));
 
     const [first, second] = await Promise.all([
@@ -41,7 +50,10 @@ describe('FiscalFolioProvider', () => {
   });
 
   it('rejects CAF from a different issuer', async () => {
-    const provider = new FiscalFolioProvider(mockConfigService({}));
+    const provider = new FiscalFolioProvider(
+      mockConfigService({}),
+      mockCustodyService(),
+    );
 
     await expect(
       provider.addCafXml(context, cafXml('22222222-2', 1, 2)),
@@ -49,7 +61,10 @@ describe('FiscalFolioProvider', () => {
   });
 
   it('rejects folios outside CAF range', async () => {
-    const provider = new FiscalFolioProvider(mockConfigService({}));
+    const provider = new FiscalFolioProvider(
+      mockConfigService({}),
+      mockCustodyService(),
+    );
     await provider.addCafXml(context, cafXml('11111111-1', 10, 11));
 
     await expect(
@@ -60,6 +75,7 @@ describe('FiscalFolioProvider', () => {
   it('rejects configured CAF paths without .xml or .txt extension', async () => {
     const provider = new FiscalFolioProvider(
       mockConfigService({ SII_CAF_PATH: 'C:\\secure\\caf.pdf' }),
+      mockCustodyService(),
     );
 
     await expect(provider.onModuleInit()).rejects.toThrow(
@@ -74,6 +90,7 @@ describe('FiscalFolioProvider', () => {
         NODE_ENV: 'production',
         SII_CAF_PATH: 'C:\\secure\\caf.xml',
       }),
+      mockCustodyService(),
     );
 
     await expect(provider.onModuleInit()).rejects.toThrow(
@@ -86,12 +103,31 @@ describe('FiscalFolioProvider', () => {
     mockAccess.mockRejectedValue(new Error('missing file'));
     const provider = new FiscalFolioProvider(
       mockConfigService({ SII_CAF_PATH: 'C:\\secure\\caf.xml' }),
+      mockCustodyService(),
     );
 
     await expect(provider.onModuleInit()).rejects.toThrow(
       'SII_CAF_PATH no apunta a un archivo legible',
     );
     expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it('resolves relative CAF paths from the project root', async () => {
+    mockReadFile.mockResolvedValue(cafXml('11111111-1', 1, 2));
+    const provider = new FiscalFolioProvider(
+      mockConfigService({ SII_CAF_PATH: 'secure/caf-39.xml' }),
+      mockCustodyService(),
+    );
+
+    await provider.onModuleInit();
+
+    expect(mockAccess).toHaveBeenCalledWith(
+      resolveProjectPath('secure/caf-39.xml'),
+    );
+    expect(mockReadFile).toHaveBeenCalledWith(
+      resolveProjectPath('secure/caf-39.xml'),
+      'utf8',
+    );
   });
 });
 

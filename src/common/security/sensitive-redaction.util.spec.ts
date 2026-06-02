@@ -26,6 +26,18 @@ describe('sensitive fiscal redaction', () => {
     ).not.toThrow();
   });
 
+  it('allows issuer onboarding sensitive fields only when explicitly permitted', () => {
+    expect(() =>
+      assertNoSensitiveKeys(
+        {
+          pfxBase64: 'ZmFrZS1wZng=',
+          pfxPassword: 'allowed-here',
+        },
+        { allowKeys: ['pfxBase64', 'pfxPassword'] },
+      ),
+    ).not.toThrow();
+  });
+
   it('redacts raw provider responses and fiscal secrets before public output', () => {
     const sanitized = sanitizePublicPayload({
       trackId: '123',

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SiiEnvironment } from 'sii-engine';
+import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 import { IssuerContextDto } from './dto/issuer-context.dto';
 
 export const FISCAL_ISSUER_STORE = Symbol('FISCAL_ISSUER_STORE');
@@ -50,7 +51,7 @@ export class LocalEnvFiscalIssuerStore implements FiscalIssuerStore {
       merchantId: lookup?.merchantId,
       branchId: lookup?.branchId,
       environment: this.resolveEnvironment(),
-      rutEmisor,
+      rutEmisor: lookup?.rutEmisor ?? rutEmisor,
       fechaResolucion,
       nroResolucion,
       certificateRef:
@@ -73,6 +74,31 @@ export class LocalEnvFiscalIssuerStore implements FiscalIssuerStore {
     }
 
     return SiiEnvironment.Certificacion;
+  }
+}
+
+@Injectable()
+export class CompositeFiscalIssuerStore implements FiscalIssuerStore {
+  constructor(
+    private readonly localStore: LocalEnvFiscalIssuerStore,
+    private readonly custodyService: FiscalCustodyService,
+  ) {}
+
+  async resolveIssuer(
+    lookup?: IssuerContextDto,
+  ): Promise<FiscalIssuerConfig | undefined> {
+    if (lookup?.tenantId && lookup?.rutEmisor) {
+      const persisted = await this.custodyService.findIssuer({
+        tenantId: lookup.tenantId,
+        merchantId: lookup.merchantId,
+        branchId: lookup.branchId,
+        rutEmisor: lookup.rutEmisor,
+        environment: lookup.environment,
+      });
+      if (persisted) return persisted;
+    }
+
+    return this.localStore.resolveIssuer(lookup);
   }
 }
 

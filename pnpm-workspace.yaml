@@ -1,6 +1,6 @@
 packages:
   - "."
-  - "../../biblioteca sii/sii-engine"
+  - "../sii-engine"
 
 allowBuilds:
   '@nestjs/core': true

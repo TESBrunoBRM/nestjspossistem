@@ -160,8 +160,9 @@ describe('FiscalController (e2e)', () => {
       .expect(200);
 
     expect(response.body.success).toBe(true);
-    expect(response.body.data).toEqual({
+    expect(response.body.data).toMatchObject({
       engine: 'sii-engine',
+      custodyMode: 'memory',
       simpleApiEnabled: false,
       status: 'ok',
     });
@@ -346,13 +347,13 @@ describe('FiscalController (e2e)', () => {
       .send(payload)
       .expect(201);
 
+    internalId = response.body.data.internalId;
+
     expect(response.body.success).toBe(true);
     expect(response.body.data.internalId).toBeDefined();
-    expect(response.body.data.folio).toBe(1);
+    expect(response.body.data.folio).toBeGreaterThan(0);
     expect(response.body.data.trackId).toBe('e2e-track-123');
     expectPublicPayloadSafe(response.body);
-
-    internalId = response.body.data.internalId;
   });
 
   it('GET /api/fiscal/documents/:id/status checks status and increments attempts', async () => {
@@ -520,6 +521,10 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
 
   const publicKeyAsn1 = forge.pki.publicKeyToAsn1(keys.publicKey);
   const publicKeyDer = forge.asn1.toDer(publicKeyAsn1).getBytes();
+  const modulusHex = toEvenLengthHex(keys.publicKey.n.toString(16));
+  const exponentHex = toEvenLengthHex(keys.publicKey.e.toString(16));
+  const rsapkModulus = forge.util.encode64(forge.util.hexToBytes(modulusHex));
+  const rsapkExponent = forge.util.encode64(forge.util.hexToBytes(exponentHex));
   const rsapubk = forge.util.encode64(publicKeyDer);
 
   return `<?xml version="1.0" encoding="ISO-8859-1"?>
@@ -532,8 +537,8 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
       <RNG><D>${start}</D><H>${end}</H></RNG>
       <FA>2026-01-01</FA>
       <RSAPK>
-        <M>${rsapubk}</M>
-        <E>Aw==</E>
+        <M>${rsapkModulus}</M>
+        <E>${rsapkExponent}</E>
       </RSAPK>
       <IDK>1</IDK>
     </DA>
@@ -542,4 +547,8 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
   <RSASK>${rsask}</RSASK>
   <RSAPUBK>${rsapubk}</RSAPUBK>
 </AUTORIZACION>`;
+}
+
+function toEvenLengthHex(value: string): string {
+  return value.length % 2 === 0 ? value : `0${value}`;
 }

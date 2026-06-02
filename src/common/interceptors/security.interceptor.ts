@@ -19,7 +19,7 @@ export class SecurityInterceptor implements NestInterceptor {
     }>();
     try {
       assertNoSensitiveKeys(request.body, {
-        allowKeys: isCafImportEndpoint(request) ? ['cafXml'] : [],
+        allowKeys: allowedSensitiveKeysForRequest(request),
       });
     } catch {
       throw new BadRequestException(
@@ -31,13 +31,26 @@ export class SecurityInterceptor implements NestInterceptor {
   }
 }
 
-function isCafImportEndpoint(request: {
+function allowedSensitiveKeysForRequest(request: {
   method?: string;
   originalUrl?: string;
   url?: string;
-}): boolean {
+}): string[] {
   const url = request.originalUrl ?? request.url ?? '';
-  return (
-    request.method === 'POST' && /\/api\/fiscal\/folios\/cafs(?:\?|$)/.test(url)
-  );
+
+  if (
+    request.method === 'POST' &&
+    /\/api\/fiscal\/folios\/cafs(?:\?|$)/.test(url)
+  ) {
+    return ['cafXml'];
+  }
+
+  if (
+    request.method === 'POST' &&
+    /\/api\/fiscal\/issuers(?:\?|$)/.test(url)
+  ) {
+    return ['pfxBase64', 'pfxPassword'];
+  }
+
+  return [];
 }

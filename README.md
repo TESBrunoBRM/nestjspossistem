@@ -1,22 +1,42 @@
 # Business App SII
 
-Backend NestJS para operar documentos tributarios electronicos con `sii-engine` como unica capa fiscal.
+Backend NestJS para operar documentos tributarios electronicos con `sii-engine` como unica capa fiscal y servir como plataforma fiscal privada interna del producto.
 
 Este proyecto reemplaza la integracion antigua con SimpleAPI. No debe existir diseno, fallback, runtime, variables de entorno ni endpoints productivos asociados a SimpleAPI.
 
 ## Estado actual
 
-- NestJS expone la API REST para Flutter/POS y administra seguridad, contexto fiscal, certificados, CAF, folios, RVD y polling.
+- NestJS expone hoy una API REST util para desarrollo, certificacion e integracion, pero la topologia objetivo lo posiciona como backend fiscal privado para `business_app_back` u otros backends de negocio, no como API publica para Flutter.
 - `sii-engine` se usa como libreria local para XML, firma, token SII, envio, validaciones fiscales, parsers y sanitizacion.
 - `pnpm workspace` conecta este backend con la libreria local `sii-engine` mediante `"sii-engine": "workspace:*"`.
-- La emision de boleta electronica `tipoDTE=39` ya alcanza el upload del SII en certificacion y devuelve `trackId`.
-- La persistencia actual de certificados, CAF, folios y tracking es in-memory/local para desarrollo. Produccion debe reemplazarla por storage transaccional, cifrado y auditable.
+- La emision real de boleta electronica `tipoDTE=39` ya fue validada en certificacion SII con `trackId` y consulta de estado operativa, usando certificado y `CAF` persistidos por emisor.
+- La custodia de certificados, password y `CAF` ya tiene una primera capa AWS-compatible por emisor. Lo que sigue pendiente para produccion es endurecer la persistencia de documentos, tracking, RVD y auditoria con storage transaccional, cifrado y auditable.
+
+## Hito de avance al 2026-06-01
+
+- `test/fiscal-real-sii.smoke-spec.ts` ya cubre token real, custodia por emisor, `CAF`, emision real y consulta de estado.
+- `pnpm run test:real-sii:existing-caf` queda como regresion manual corta para la vertical boleta.
+- El foco siguiente pasa a ser persistencia durable del lifecycle fiscal, RVD, evidencia de certificacion e integracion con `business_app_back`.
+
+## Responsabilidad de este proyecto
+
+- actuar como plataforma fiscal privada del workspace
+- custodiar certificados, CAF, folios y la automatizacion fiscal operativa
+- exponer contratos internos para `business_app_back` u otros backends de negocio
+- ejecutar el dialogo oficial con el SII usando `sii-engine` como core
+
+## Limites
+
+- no es la API publica del POS o de Flutter
+- no reemplaza auth, ventas, inventario, usuarios ni reportes del dominio comercial
+- no reimplementa el core tributario; hospeda y orquesta `sii-engine`
 
 ## Arquitectura
 
 ```mermaid
 flowchart LR
-  Flutter["Flutter POS / Admin"] --> Nest["NestJS API /api/fiscal"]
+  Flutter["Flutter POS / Admin"] --> Back["business_app_back"]
+  Back --> Nest["business-app-sii /api/fiscal (interno)"]
   Nest --> Context["FiscalContextResolver"]
   Nest --> Signing["FiscalSigningProvider"]
   Nest --> Folios["FiscalFolioProvider"]
@@ -31,24 +51,26 @@ flowchart LR
 
 Responsabilidades:
 
-- NestJS: autenticacion API key, DTOs, rate limiting, tenant/emisor, secretos, folios, tracking, idempotencia, colas futuras y respuestas publicas.
+- `business-app-sii`: contexto fiscal, secretos, certificados, CAF, folios, tracking, polling, RVD, respuestas saneadas y contratos internos para backends de negocio.
+- `business_app_back`: autenticacion de usuarios, reglas comerciales, terminales, proyeccion del estado fiscal hacia la UI y orquestacion con la plataforma fiscal.
 - `sii-engine`: construccion XML, TED, firmas, token SII, clientes SII, parsers, estados publicos y sanitizacion.
-- Flutter: nunca recibe PFX, password, CAF completo, RSASK, private keys, token SII, cookies ni XML firmado.
+- Flutter: nunca recibe PFX, password, CAF completo, RSASK, private keys, token SII, cookies ni XML firmado, y no deberia llamar directo a `business-app-sii` en produccion.
 
 ## Requisitos
 
 - Node.js compatible con NestJS 11.
 - Corepack habilitado.
 - pnpm `11.0.9`.
-- Acceso local a `sii-engine` en el workspace.
+- Este repositorio debe conservar `business-app-sii` y `sii-engine` como carpetas hermanas.
 - Certificado PFX valido para pruebas locales.
 - CAF XML valido para el RUT emisor y tipo DTE requerido.
 
 Estructura esperada en desarrollo:
 
 ```text
-C:\Users\bbrev\OneDrive\Desktop\nest\myfirstapp
-C:\Users\bbrev\OneDrive\Desktop\biblioteca sii\sii-engine
+business-app/
+  business-app-sii/
+  sii-engine/
 ```
 
 `pnpm-workspace.yaml` debe incluir:
@@ -56,17 +78,21 @@ C:\Users\bbrev\OneDrive\Desktop\biblioteca sii\sii-engine
 ```yaml
 packages:
   - .
-  - ../../biblioteca sii/sii-engine
+  - ../sii-engine
 ```
 
 ## Instalacion
 
-Desde `C:\Users\bbrev\OneDrive\Desktop\nest\myfirstapp`:
+Desde `business-app-sii`:
 
 ```powershell
 corepack enable
 corepack pnpm install
 ```
+
+La resolucion de `sii-engine` queda amarrada a la estructura del repositorio, no a una ruta absoluta del equipo. Mientras ambas carpetas sigan siendo hermanas, no hace falta editar rutas por PC o por usuario.
+
+Los scripts principales del backend (`build`, `start`, `start:dev`, `test`, `test:e2e`) construyen primero la libreria hermana `sii-engine`, para que los tipos y artefactos en `dist/` existan aunque el paquete este enlazado por workspace.
 
 Verificar que `sii-engine` resuelve como workspace:
 
@@ -125,11 +151,13 @@ http://localhost:3002/api
 
 ## Autenticacion
 
-Los endpoints fiscales mutables requieren header:
+Los endpoints fiscales mutables requieren hoy el header:
 
 ```http
 x-api-key: <API_KEY_FRONTEND>
 ```
+
+En la topologia objetivo este backend debe quedar detras de una frontera privada y autenticacion service-to-service. Ese header actual sirve como bootstrap local, no como contrato final expuesto a Flutter.
 
 El health fiscal puede usarse para diagnostico basico:
 
@@ -474,13 +502,15 @@ Body:
 
 Si `secEnvio` no viene, el backend lo resuelve con `FiscalRvdSequenceProvider` in-memory.
 
-### Provision edge/offline
+### Offline comercial recomendado
 
 ```http
 POST /api/fiscal/edge/provisions
 ```
 
-Permite entregar a Flutter una provision controlada de folios para modo offline sin exponer secretos. Debe usarse con politicas estrictas de expiracion, rango y maximo de documentos.
+La arquitectura objetivo del producto no recomienda emision fiscal offline en Flutter. El POS debe guardar la venta localmente, imprimir solo un comprobante comercial y sincronizar despues con `business_app_back`, que a su vez coordina la boleta oficial con `business-app-sii`.
+
+El endpoint anterior debe considerarse experimental o heredado. No forma parte del contrato recomendado con Flutter ni debe habilitarse en produccion sin reabrir la decision arquitectonica de llevar material fiscal al dispositivo.
 
 ## Flujo recomendado para certificacion
 
@@ -491,7 +521,7 @@ Permite entregar a Flutter una provision controlada de folios para modo offline 
 5. Si no hay CAF, importar CAF o solicitarlo con `/api/fiscal/folios/requests`.
 6. Emitir boleta con `/api/fiscal/documents/boletas`.
 7. Guardar `internalId`, `folio`, `trackId`, `status`.
-8. Esperar correo/resultado SII o consultar estado cuando el cliente REST de boleta este completado.
+8. Consultar estado con `GET /api/fiscal/documents/:internalId/status` o polling por `trackId`, y contrastar con correo/resultado SII si necesitas evidencia adicional.
 9. Enviar RVD diario si corresponde.
 
 ## Seguridad
@@ -521,13 +551,83 @@ No exponer al frontend:
 
 ## Persistencia y produccion
 
-Lo in-memory actual sirve para desarrollo y certificacion controlada. Antes de produccion, reemplazar:
+El proyecto ya incluye una primera capa productiva de custodia fiscal por emisor para certificados y CAF:
 
-- `FiscalSigningProvider` local por storage cifrado de certificados por tenant.
-- `FiscalFolioProvider` in-memory por folios transaccionales con locks.
-- Repositorios de documentos/RVD/CAF acquisition por storage durable.
-- Polling manual por workers/colas con backoff y rate-limit.
-- Logs locales por auditoria segura con redaccion de secretos.
+- `POST /api/fiscal/issuers` registra o rota un PFX/password por `tenantId + rutEmisor + environment`.
+- `FiscalSigningProvider` resuelve `certificateRef` persistido antes de caer al bootstrap local.
+- `FiscalFolioProvider` guarda CAF por emisor cuando el `IssuerContext` trae `tenantId`.
+- La adquisicion de CAF por scraping importa automaticamente el XML descargado y lo deja disponible para el mismo emisor.
+
+### Storage AWS recomendado
+
+La implementacion actual esta optimizada para costo operativo bajo:
+
+- `S3` guarda blobs grandes o binarios: `PFX/P12` y `CAF XML`.
+- `SSM Parameter Store (SecureString)` guarda solo `pfxPassword`.
+- `DynamoDB` guarda metadata del emisor, referencias a objetos y cursor `nextFolio`.
+
+Variables:
+
+```env
+AWS_REGION=sa-east-1
+AWS_FISCAL_DDB_TABLE=business-app-sii-fiscal
+AWS_FISCAL_S3_BUCKET=business-app-sii-fiscal
+AWS_FISCAL_S3_PREFIX=fiscal-custody
+AWS_FISCAL_SSM_PREFIX=/business-app-sii/fiscal
+```
+
+Opcionales:
+
+```env
+AWS_FISCAL_S3_KMS_KEY_ID=arn:aws:kms:...
+AWS_FISCAL_SSM_KMS_KEY_ID=alias/aws/ssm
+```
+
+Recomendacion de costos:
+
+- Partir con `DynamoDB On-Demand` si el volumen por tenant es bajo o irregular.
+- Usar cifrado `SSE-S3` por defecto para evitar costo por request de KMS; activar `AWS_FISCAL_S3_KMS_KEY_ID` solo si compliance lo exige.
+- Mantener un solo bucket y una sola tabla para todos los emisores, separando por llaves logicas.
+- Guardar en SSM solo el password; no usar Secrets Manager salvo necesidad de rotacion administrada o politicas mas avanzadas.
+
+### Desarrollo local con Ministack
+
+El repo queda preparado para usar `S3 + DynamoDB + SSM Parameter Store` sobre MiniStack en `http://127.0.0.1:4566`.
+
+Archivo incluido:
+
+- `.env.ministack`
+
+Comandos:
+
+```powershell
+pnpm run ministack:start
+pnpm run ministack:bootstrap
+pnpm run start:dev:ministack
+```
+
+Que hace cada uno:
+
+- `ministack:start`: levanta MiniStack en una terminal dedicada, con `TMPDIR` y estado persistente local bajo `.ministack/`.
+- `ministack:bootstrap`: verifica health, crea bucket S3, crea tabla DynamoDB y prueba `SecureString` en SSM.
+- `start:dev:ministack`: arranca `business-app-sii` usando las variables de `.env.ministack`.
+
+En Windows, este flujo se deja en foreground de forma intencional porque el modo detach del CLI de MiniStack puede fallar silenciosamente con rutas temporales/logs. Para detenerlo, usar `Ctrl+C` en la terminal donde corre `pnpm run ministack:start`.
+
+Variables locales relevantes:
+
+```env
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_ENDPOINT_URL=http://127.0.0.1:4566
+AWS_FISCAL_DDB_ENDPOINT=http://127.0.0.1:4566
+AWS_FISCAL_S3_ENDPOINT=http://127.0.0.1:4566
+AWS_FISCAL_SSM_ENDPOINT=http://127.0.0.1:4566
+AWS_FISCAL_S3_FORCE_PATH_STYLE=true
+```
+
+Internamente `FiscalCustodyService` ya soporta endpoint global (`AWS_ENDPOINT_URL`) y overrides por servicio para DynamoDB, S3 y SSM.
 
 Datos que deben persistirse:
 
@@ -536,6 +636,31 @@ Datos que deben persistirse:
 - `internalId`, tipo DTE, folio, `trackId`, estado publico.
 - Intentos, `nextPollAt`, fechas, errores normalizados.
 - Respuestas crudas solo en storage protegido, nunca hacia frontend.
+
+Ejemplo de onboarding de emisor:
+
+```http
+POST /api/fiscal/issuers
+Content-Type: application/json
+x-api-key: ***
+```
+
+```json
+{
+  "tenantId": "tenant-demo",
+  "merchantId": "merchant-main",
+  "branchId": "branch-001",
+  "rutEmisor": "76123456-0",
+  "environment": "CERTIFICACION",
+  "fechaResolucion": "2020-01-01",
+  "nroResolucion": 80,
+  "pfxBase64": "<base64-del-pfx>",
+  "pfxPassword": "<password-del-pfx>",
+  "rutFirmante": "12345678-5"
+}
+```
+
+Con eso, el scraping de CAF para ese mismo `tenantId + rutEmisor + environment` queda listo para persistir el CAF descargado y servir folios despues.
 
 ## Comandos de validacion
 
@@ -556,7 +681,7 @@ Eliminar del `.env` cualquier variable que empiece con `SIMPLEAPI_`. El backend 
 
 ### `No existe contexto fiscal autorizado`
 
-Faltan variables locales de contexto (`SII_RUT_EMISOR`, `SII_FECHA_RESOLUCION`, `SII_NRO_RESOLUCION`) o en produccion falta provider de tenant/emisor.
+Faltan variables locales de contexto (`SII_RUT_EMISOR`, `SII_FECHA_RESOLUCION`, `SII_NRO_RESOLUCION`) o el emisor aun no fue registrado en `POST /api/fiscal/issuers`.
 
 ### `No se encontro un CAF valido`
 
@@ -570,14 +695,15 @@ El SII recibio el XML pero lo rechazo por validacion XSD. Revisar `detail` publi
 
 El upload llego al SII, pero el RUT del certificado no esta autorizado para firmar por la empresa. Debe autorizarse en el SII o usar un certificado de representante autorizado.
 
-### Consulta de estado boleta falla
+### Smoke real o consulta de estado no cuadran con el correo SII
 
-El upload funciona. Falta completar/migrar la consulta de estado de boleta al servicio REST correspondiente del SII, separado del legacy DTE.
+Revisar los artefactos bajo `secure/real-sii-tests/artifacts/<folio>/` y comparar `trackId`, estado consultado y XML de respuesta. El smoke real deja evidencia suficiente para diagnosticar diferencias entre lo que responde la API y lo que informa el SII por correo.
 
 ## Pendientes principales
 
-- Implementar cliente REST oficial para consulta de estado de boleta.
-- Persistencia productiva para CAF, folios, documentos, RVD, trackId y auditoria.
-- Onboarding seguro de emisores/certificados/CAF desde el backend host.
+- Persistencia durable para documentos emitidos, RVD, trackId, polling y auditoria.
+- Automatizar RVD diario y conciliacion completa de boletas por dia.
+- Validacion XSD real, golden fixtures y evidencia formal de certificacion.
+- Endpoint host-to-host en `business_app_back` para onboarding y sincronizacion de emisores contra `business-app-sii`.
 - Soporte completo de factura 33, nota de credito 61 y otros DTE fuera del flujo boleta.
 - Workers de polling con locks, backoff y rate limits.

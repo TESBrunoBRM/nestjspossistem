@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { FiscalModule } from '../fiscal/fiscal.module';
+import { FiscalStorageModule } from '../fiscal-storage/fiscal-storage.module';
 import { FiscalDocumentsController } from './fiscal-documents.controller';
 import { FiscalFoliosController } from './fiscal-folios.controller';
 import { FiscalDocumentService } from './fiscal-document.service';
@@ -9,7 +10,7 @@ import { FiscalDocumentRepository } from './fiscal-document.repository';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
 
 @Module({
-  imports: [FiscalModule],
+  imports: [FiscalModule, FiscalStorageModule],
   controllers: [FiscalDocumentsController, FiscalFoliosController],
   providers: [
     FiscalDocumentService,

@@ -7,6 +7,8 @@ import {
   type CertificateMaterial,
   type IssuerContext,
 } from 'sii-engine';
+import { resolveProjectPath } from '../common/utils/project-path.util';
+import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 import { FiscalSigningProvider } from './fiscal-signing.provider';
 
 jest.mock('fs/promises', () => ({
@@ -43,6 +45,12 @@ const context: IssuerContext = {
   certificateRef: 'default',
 };
 
+function mockCustodyService(): FiscalCustodyService {
+  return {
+    getSigningMaterialByRef: jest.fn().mockResolvedValue(undefined),
+  } as unknown as FiscalCustodyService;
+}
+
 describe('FiscalSigningProvider', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -59,7 +67,7 @@ describe('FiscalSigningProvider', () => {
     mockReadFile.mockResolvedValue(pfxBuffer);
     mockLoadCertificateFromP12.mockReturnValue(material);
 
-    const provider = new FiscalSigningProvider(config);
+    const provider = new FiscalSigningProvider(config, mockCustodyService());
     await provider.onModuleInit();
 
     await expect(provider.getSigningMaterial(context)).resolves.toBe(material);
@@ -70,11 +78,30 @@ describe('FiscalSigningProvider', () => {
     );
   });
 
+  it('resolves relative PFX paths from the project root', async () => {
+    const config = createConfigService({
+      SII_CERT_REF: 'default',
+      SII_PFX_PATH: 'secure/certificado.pfx',
+      SII_PFX_PASSWORD: 'secret-pass',
+    });
+    const pfxBuffer = Buffer.from('fake-pfx');
+    mockReadFile.mockResolvedValue(pfxBuffer);
+    mockLoadCertificateFromP12.mockReturnValue(material);
+
+    const provider = new FiscalSigningProvider(config, mockCustodyService());
+    await provider.onModuleInit();
+
+    expect(mockReadFile).toHaveBeenCalledWith(
+      resolveProjectPath('secure/certificado.pfx'),
+    );
+  });
+
   it('rejects PFX configuration without password before using SII', async () => {
     const provider = new FiscalSigningProvider(
       createConfigService({
         SII_PFX_PATH: 'C:\\secure\\cert.pfx',
       }),
+      mockCustodyService(),
     );
 
     await expect(provider.onModuleInit()).rejects.toThrow(
@@ -89,6 +116,7 @@ describe('FiscalSigningProvider', () => {
         SII_PFX_PATH: 'C:\\secure\\cert.pfx',
         SII_PFX_PASSWORD: 'secret-pass',
       }),
+      mockCustodyService(),
     );
 
     await expect(provider.onModuleInit()).rejects.toThrow(
@@ -103,6 +131,7 @@ describe('FiscalSigningProvider', () => {
         SII_PFX_PATH: 'C:\\secure\\certificado',
         SII_PFX_PASSWORD: 'secret-pass',
       }),
+      mockCustodyService(),
     );
 
     await expect(provider.onModuleInit()).rejects.toThrow(
@@ -118,6 +147,7 @@ describe('FiscalSigningProvider', () => {
         SII_PFX_PATH: 'C:\\secure\\cert.pfx',
         SII_PFX_PASSWORD: 'secret-pass',
       }),
+      mockCustodyService(),
     );
 
     await expect(provider.onModuleInit()).rejects.toThrow(
@@ -127,7 +157,10 @@ describe('FiscalSigningProvider', () => {
   });
 
   it('validates certificate fingerprint using fingerprintSha256', async () => {
-    const provider = new FiscalSigningProvider(createConfigService({}));
+    const provider = new FiscalSigningProvider(
+      createConfigService({}),
+      mockCustodyService(),
+    );
     provider.registerCertificate('default', material);
 
     await expect(
@@ -146,7 +179,10 @@ describe('FiscalSigningProvider', () => {
   });
 
   it('does not leak certificateRef when signing material is missing', async () => {
-    const provider = new FiscalSigningProvider(createConfigService({}));
+    const provider = new FiscalSigningProvider(
+      createConfigService({}),
+      mockCustodyService(),
+    );
 
     await expect(
       provider.getSigningMaterial({

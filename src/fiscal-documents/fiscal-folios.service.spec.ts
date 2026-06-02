@@ -6,6 +6,7 @@ import { SiiEnvironment, TipoDTE, type IssuerContext } from 'sii-engine';
 import { FiscalContextResolver } from '../fiscal/fiscal-context.resolver';
 import type { IssuerContextDto } from '../fiscal/dto/issuer-context.dto';
 import { FISCAL_ISSUER_STORE } from '../fiscal/fiscal-issuer.store';
+import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
 import { FiscalFolioProvider } from './fiscal-folio.provider';
 import { FiscalFoliosService } from './fiscal-folios.service';
@@ -55,6 +56,10 @@ describe('FiscalFoliosService', () => {
           useValue: {
             get: jest.fn(),
           },
+        },
+        {
+          provide: FiscalCustodyService,
+          useValue: {},
         },
       ],
     }).compile();
@@ -187,6 +192,10 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
 
   const publicKeyAsn1 = forge.pki.publicKeyToAsn1(keys.publicKey);
   const publicKeyDer = forge.asn1.toDer(publicKeyAsn1).getBytes();
+  const modulusHex = toEvenLengthHex(keys.publicKey.n.toString(16));
+  const exponentHex = toEvenLengthHex(keys.publicKey.e.toString(16));
+  const rsapkModulus = forge.util.encode64(forge.util.hexToBytes(modulusHex));
+  const rsapkExponent = forge.util.encode64(forge.util.hexToBytes(exponentHex));
   const rsapubk = forge.util.encode64(publicKeyDer);
 
   return `<?xml version="1.0" encoding="ISO-8859-1"?>
@@ -199,8 +208,8 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
       <RNG><D>${start}</D><H>${end}</H></RNG>
       <FA>2026-01-01</FA>
       <RSAPK>
-        <M>${rsapubk}</M>
-        <E>Aw==</E>
+        <M>${rsapkModulus}</M>
+        <E>${rsapkExponent}</E>
       </RSAPK>
       <IDK>1</IDK>
     </DA>
@@ -209,4 +218,8 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
   <RSASK>${rsask}</RSASK>
   <RSAPUBK>${rsapubk}</RSAPUBK>
 </AUTORIZACION>`;
+}
+
+function toEvenLengthHex(value: string): string {
+  return value.length % 2 === 0 ? value : `0${value}`;
 }

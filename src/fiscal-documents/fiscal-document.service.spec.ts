@@ -4,9 +4,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import forge from 'node-forge';
 import {
+  parseCaf,
   SiiEnvironment,
   SiiSendError,
   TipoDTE,
+  verifyTedSignatureForDd,
   type IssuerContext,
 } from 'sii-engine';
 import { FiscalDocumentService } from './fiscal-document.service';
@@ -18,6 +20,7 @@ import { FISCAL_ISSUER_STORE } from '../fiscal/fiscal-issuer.store';
 import { FISCAL_SIGNING_PROVIDER } from '../fiscal/fiscal-provider.tokens';
 import { FiscalSigningProvider } from '../fiscal/fiscal-signing.provider';
 import { FiscalTokenProvider } from '../fiscal/fiscal-token.provider';
+import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 import { FiscalPollingService } from '../fiscal-polling/fiscal-polling.service';
 import { FiscalRvdService } from '../fiscal-rvd/fiscal-rvd.service';
 import { FiscalRvdSequenceProvider } from '../fiscal-rvd/fiscal-rvd-sequence.provider';
@@ -132,6 +135,10 @@ describe('Fiscal Services with Mock Transport', () => {
         FiscalDocumentRepository,
         FiscalFolioProvider,
         {
+          provide: FiscalCustodyService,
+          useValue: {},
+        },
+        {
           provide: FISCAL_FOLIO_PROVIDER,
           useExisting: FiscalFolioProvider,
         },
@@ -194,7 +201,8 @@ describe('Fiscal Services with Mock Transport', () => {
   describe('FiscalDocumentService', () => {
     it('emits boleta, stores in repository and retrieves printed sample', async () => {
       // Add CAF xml so folio resolution works
-      await folioProvider.addCafXml(context, cafXml('11111111-1', 10, 20));
+      const caf = cafXml('11111111-1', 10, 20);
+      await folioProvider.addCafXml(context, caf);
 
       const dto = {
         context: {
@@ -231,6 +239,24 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(signedEnvelope).not.toContain('<Acteco>');
       expect(signedEnvelope).toContain('<FRMT algoritmo="SHA1withRSA">');
       expect(signedEnvelope).toContain('<TmstFirma>');
+      const tstedMatch = signedEnvelope.match(/<TSTED>([^<]+)<\/TSTED>/);
+      const tmstFirmaMatch = signedEnvelope.match(/<TmstFirma>([^<]+)<\/TmstFirma>/);
+      const ddMatch = signedEnvelope.match(/<DD>[\s\S]*?<\/DD>/);
+      const frmtMatch = signedEnvelope.match(
+        /<FRMT\b[^>]*>([\s\S]*?)<\/FRMT>/,
+      );
+      expect(tstedMatch?.[1]).toBeTruthy();
+      expect(tmstFirmaMatch?.[1]).toBeTruthy();
+      expect(tstedMatch?.[1]).toBe(tmstFirmaMatch?.[1]);
+      expect(ddMatch?.[0]).toBeTruthy();
+      expect(frmtMatch?.[1]).toBeTruthy();
+      expect(
+        verifyTedSignatureForDd(
+          ddMatch?.[0] ?? '',
+          parseCaf(caf),
+          frmtMatch?.[1]?.trim() ?? '',
+        ),
+      ).toBe(true);
 
       // Check document was saved in repository
       const record = repository.findById(result.internalId);
@@ -497,6 +523,10 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
 
   const publicKeyAsn1 = forge.pki.publicKeyToAsn1(keys.publicKey);
   const publicKeyDer = forge.asn1.toDer(publicKeyAsn1).getBytes();
+  const modulusHex = toEvenLengthHex(keys.publicKey.n.toString(16));
+  const exponentHex = toEvenLengthHex(keys.publicKey.e.toString(16));
+  const rsapkModulus = forge.util.encode64(forge.util.hexToBytes(modulusHex));
+  const rsapkExponent = forge.util.encode64(forge.util.hexToBytes(exponentHex));
   const rsapubk = forge.util.encode64(publicKeyDer);
 
   return `<?xml version="1.0" encoding="ISO-8859-1"?>
@@ -509,8 +539,8 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
       <RNG><D>${start}</D><H>${end}</H></RNG>
       <FA>2026-01-01</FA>
       <RSAPK>
-        <M>${rsapubk}</M>
-        <E>Aw==</E>
+        <M>${rsapkModulus}</M>
+        <E>${rsapkExponent}</E>
       </RSAPK>
       <IDK>1</IDK>
     </DA>
@@ -519,4 +549,8 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
   <RSASK>${rsask}</RSASK>
   <RSAPUBK>${rsapubk}</RSAPUBK>
 </AUTORIZACION>`;
+}
+
+function toEvenLengthHex(value: string): string {
+  return value.length % 2 === 0 ? value : `0${value}`;
 }

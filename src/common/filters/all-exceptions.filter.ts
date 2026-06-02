@@ -80,6 +80,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
       try {
         const publicErr = toPublicSiiError(exception);
         finalMessage = publicErr.message;
+        if (publicErr.code) {
+          code = publicErr.code;
+        }
         if ((publicErr as any).details) {
           finalDetails = (publicErr as any).details;
         }

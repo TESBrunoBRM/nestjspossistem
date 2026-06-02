@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { SiiEnvironment } from 'sii-engine';
 
 export class IssuerContextDto {
   @IsOptional()
@@ -13,6 +14,14 @@ export class IssuerContextDto {
   @IsOptional()
   @IsString()
   branchId?: string;
+
+  @IsOptional()
+  @IsString()
+  rutEmisor?: string;
+
+  @IsOptional()
+  @IsEnum(SiiEnvironment)
+  environment?: SiiEnvironment;
 
   @IsOptional()
   @IsString()

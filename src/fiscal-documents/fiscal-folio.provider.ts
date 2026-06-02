@@ -21,6 +21,8 @@ import {
   type IssuerContext,
   type TipoDTE,
 } from 'sii-engine';
+import { resolveProjectPath } from '../common/utils/project-path.util';
+import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 
 interface InMemoryCafEntry {
   caf: CafMaterial;
@@ -34,7 +36,10 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
   private readonly entries = new Map<string, InMemoryCafEntry[]>();
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly custodyService: FiscalCustodyService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     this.assertNoProductionLocalBootstrap();
@@ -45,11 +50,17 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
     context: IssuerContext | undefined,
     cafXml: string,
   ): Promise<void> {
+    const caf = parseCaf(cafXml);
+    caf.rsask = normalizeCafPrivateKey(caf.rsask);
+    const fiscalContext = this.resolveCafContext(context, caf);
+    this.assertCafMatchesContext(fiscalContext, caf);
+
+    if (this.shouldUseCustodyStorage(fiscalContext)) {
+      await this.custodyService.saveCaf({ context: fiscalContext, caf });
+      return;
+    }
+
     return this.enqueue(() => {
-      const caf = parseCaf(cafXml);
-      caf.rsask = normalizeCafPrivateKey(caf.rsask);
-      const fiscalContext = this.resolveCafContext(context, caf);
-      this.assertCafMatchesContext(fiscalContext, caf);
       this.addCaf(fiscalContext, caf);
     });
   }
@@ -58,6 +69,10 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
     context: IssuerContext,
     tipoDTE: TipoDTE,
   ): Promise<FolioAssignment> {
+    if (this.shouldUseCustodyStorage(context)) {
+      return this.custodyService.getNextFolio(context, tipoDTE);
+    }
+
     return this.enqueue(() => {
       const entry = this.findEntryWithAvailability(context, tipoDTE);
       const folio = this.nextAvailableFolio(entry);
@@ -75,6 +90,10 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
     tipoDTE: TipoDTE,
     folio: number,
   ): Promise<FolioAssignment> {
+    if (this.shouldUseCustodyStorage(context)) {
+      return this.custodyService.reserveFolio(context, tipoDTE, folio);
+    }
+
     return this.enqueue(() => {
       if (!Number.isInteger(folio) || folio <= 0) {
         throw new BadRequestException('El folio debe ser un entero positivo');
@@ -89,6 +108,10 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
     context: IssuerContext,
     tipoDTE?: TipoDTE,
   ): Promise<CafWithStatus[]> {
+    if (this.shouldUseCustodyStorage(context)) {
+      return this.custodyService.getCafStatus(context, tipoDTE);
+    }
+
     await Promise.resolve();
     const result: CafWithStatus[] = [];
     const normalizedRut = normalizeRut(context.rutEmisor);
@@ -142,10 +165,14 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
     const singlePath = this.configService.get<string>('SII_CAF_PATH');
     const multiplePaths = this.configService.get<string>('SII_CAF_PATHS');
     const raw = [singlePath, multiplePaths].filter(Boolean).join(',');
+    if (!raw.trim()) {
+      return [];
+    }
 
     return raw
       .split(',')
       .map((item) => item.trim())
+      .map((item) => resolveProjectPath(item))
       .filter(Boolean);
   }
 
@@ -191,6 +218,10 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
     }
 
     return SiiEnvironment.Certificacion;
+  }
+
+  private shouldUseCustodyStorage(context: IssuerContext): boolean {
+    return Boolean(context.tenantId);
   }
 
   private addCaf(context: IssuerContext, caf: CafMaterial): void {

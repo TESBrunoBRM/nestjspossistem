@@ -1,5 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import {
+  IsBoolean,
   IsEnum,
   IsNumber,
   IsString,
@@ -80,6 +81,54 @@ class EnvironmentVariables {
   @IsString()
   @IsOptional()
   SII_CAF_PATHS?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_REGION?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_ENDPOINT_URL?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_DDB_TABLE?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_DDB_ENDPOINT?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_S3_BUCKET?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_S3_ENDPOINT?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_S3_PREFIX?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  AWS_FISCAL_S3_FORCE_PATH_STYLE?: boolean;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_S3_KMS_KEY_ID?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_SSM_ENDPOINT?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_SSM_PREFIX?: string;
+
+  @IsString()
+  @IsOptional()
+  AWS_FISCAL_SSM_KMS_KEY_ID?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {
@@ -115,6 +164,16 @@ export function validateEnv(config: Record<string, unknown>) {
   if (validatedConfig.SII_PFX_PATH && !validatedConfig.SII_PFX_PASSWORD) {
     throw new Error(
       'Error de validacion de variables de entorno: SII_PFX_PASSWORD es requerido cuando SII_PFX_PATH esta configurado',
+    );
+  }
+
+  const awsConfigured = [
+    validatedConfig.AWS_FISCAL_DDB_TABLE,
+    validatedConfig.AWS_FISCAL_S3_BUCKET,
+  ].filter(Boolean);
+  if (awsConfigured.length === 1) {
+    throw new Error(
+      'Error de validacion de variables de entorno: AWS_FISCAL_DDB_TABLE y AWS_FISCAL_S3_BUCKET deben configurarse juntos',
     );
   }
 

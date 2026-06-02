@@ -179,16 +179,22 @@ function createAdapter(tokens = ['token-1']): {
     }),
   } as unknown as ConfigService;
   const tokenProvider = {
-    getToken: jest.fn((context: IssuerContext) => {
-      const token = tokens[Math.min(tokenIndex, tokens.length - 1)];
-      tokenIndex += 1;
+    getToken: jest.fn(
+      async (
+        context: IssuerContext,
+        _signingProvider: SigningProvider,
+        _forceRefresh?: boolean,
+      ) => {
+        const token = tokens[Math.min(tokenIndex, tokens.length - 1)];
+        tokenIndex += 1;
 
-      return Promise.resolve({
-        environment: context.environment,
-        obtainedAt: new Date('2026-05-26T12:00:00.000Z'),
-        token,
-      });
-    }),
+        return {
+          environment: context.environment,
+          obtainedAt: new Date('2026-05-26T12:00:00.000Z'),
+          token,
+        };
+      },
+    ),
     invalidate: jest.fn(),
   };
   const signingProvider: SigningProvider = {

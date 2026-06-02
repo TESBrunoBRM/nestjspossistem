@@ -15,6 +15,8 @@ export interface FiscalDocumentRecord {
   updatedAt: Date;
   document: DteDocument;
   tedXml: string;
+  signedDteXml?: string;
+  signedEnvelopeXml?: string;
 }
 
 @Injectable()

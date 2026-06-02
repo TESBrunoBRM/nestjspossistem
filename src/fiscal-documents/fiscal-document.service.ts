@@ -24,6 +24,8 @@ import {
   buildPrintedSampleArtifact,
   validateEdgeFiscalProvision,
   toPublicEdgeFiscalProvision,
+  verifyTedSignature,
+  verifyTedSignatureForDd,
   type DteDocument,
   type EnvioDTECaratula,
   type FolioProvider,
@@ -115,12 +117,31 @@ export class FiscalDocumentService {
 
       validateDteDocument(document, context, assignment.caf);
 
-      const frma = signTed(document, assignment.caf);
-      const tedXml = normalizeBoletaTedXml(
-        buildTedXml(document, assignment.caf, frma),
+      const signatureTimestamp = formatSiiTimestamp();
+      const frmt = signTed(document, assignment.caf, signatureTimestamp);
+      if (
+        !verifyTedSignature(document, assignment.caf, frmt, signatureTimestamp)
+      ) {
+        throw new BadRequestException(
+          'No se pudo verificar localmente la firma del TED antes del envio al SII.',
+        );
+      }
+      const tedXml = buildTedXml(
+        document,
+        assignment.caf,
+        frmt,
+        signatureTimestamp,
       );
-      const dteXml = normalizeBoletaDteXml(buildDteXml(document, tedXml));
+      const dteXml = normalizeBoletaDteXml(
+        buildDteXml(document, tedXml),
+        signatureTimestamp,
+      );
       const signedDte = signDteDocument(dteXml, document, cert);
+      assertEmbeddedTedSignature(
+        signedDte,
+        assignment.caf,
+        'documento DTE firmado',
+      );
 
       const caratula: EnvioDTECaratula = {
         rutEmisor: context.rutEmisor,
@@ -138,6 +159,11 @@ export class FiscalDocumentService {
         ensureEnvioBoletaSetDte(envelope),
         cert,
         "//*[@ID='SetDoc']",
+      );
+      assertEmbeddedTedSignature(
+        signedEnvelope,
+        assignment.caf,
+        'sobre firmado EnvioBOLETA',
       );
       const token = await this.tokenProvider.getToken(
         context,
@@ -164,6 +190,8 @@ export class FiscalDocumentService {
         attempts: 0,
         document,
         tedXml,
+        signedDteXml: signedDte,
+        signedEnvelopeXml: signedEnvelope,
         nextPollAt: new Date(Date.now() + 60000), // Next recommended poll after 60s
       });
 
@@ -309,13 +337,10 @@ function ensureEnvioBoletaSetDte(envelopeXml: string): string {
     .replace(/<\/EnvioBOLETA>\s*$/, '</SetDTE>\n</EnvioBOLETA>');
 }
 
-function normalizeBoletaTedXml(tedXml: string): string {
-  return tedXml
-    .replace(/(<\/DD>\s*)<FRMA\b/, '$1<FRMT')
-    .replace(/<\/FRMA>\s*<\/TED>/, '</FRMT>\n</TED>');
-}
-
-function normalizeBoletaDteXml(dteXml: string): string {
+function normalizeBoletaDteXml(
+  dteXml: string,
+  signatureTimestamp: string,
+): string {
   const withServiceIndicator = dteXml.includes('<IndServicio>')
     ? dteXml
     : dteXml.replace(
@@ -336,7 +361,7 @@ function normalizeBoletaDteXml(dteXml: string): string {
 
   return withBoletaEmisorTags.replace(
     /(\s*<\/Documento>)/,
-    `\n<TmstFirma>${formatSiiTimestamp()}</TmstFirma>$1`,
+    `\n<TmstFirma>${signatureTimestamp}</TmstFirma>$1`,
   );
 }
 
@@ -513,6 +538,45 @@ function formatSiiTimestamp(date = new Date()): string {
   )}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
     date.getSeconds(),
   )}`;
+}
+
+function assertEmbeddedTedSignature(
+  xml: string,
+  caf: Parameters<typeof verifyTedSignature>[1],
+  label: string,
+): void {
+  const ddXml = extractXmlBlock(xml, 'DD');
+  const frmt = extractXmlValue(xml, 'FRMT');
+
+  if (!ddXml || !frmt) {
+    throw new BadRequestException(
+      `No se pudo extraer DD/FRMT del ${label} para validar el TED.`,
+    );
+  }
+
+  if (!verifyTedSignatureForDd(ddXml, caf, frmt)) {
+    throw new BadRequestException(
+      `La firma TED embebida en el ${label} no coincide con el DD serializado.`,
+    );
+  }
+}
+
+function extractXmlBlock(xml: string, tagName: string): string | undefined {
+  const startTag = `<${tagName}`;
+  const endTag = `</${tagName}>`;
+  const startIndex = xml.indexOf(startTag);
+  const endIndex = xml.indexOf(endTag);
+
+  if (startIndex === -1 || endIndex === -1) return undefined;
+  return xml.slice(startIndex, endIndex + endTag.length);
+}
+
+function extractXmlValue(xml: string, tagName: string): string | undefined {
+  const match = xml.match(
+    new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)</${tagName}>`, 'i'),
+  );
+  const value = match?.[1]?.trim();
+  return value ? value : undefined;
 }
 
 function findRecordByLocalName(
