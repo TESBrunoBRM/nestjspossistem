@@ -8,6 +8,8 @@
   "license": "UNLICENSED",
   "scripts": {
     "build:sii-engine": "corepack pnpm --filter sii-engine build",
+    "typecheck:sii-engine": "corepack pnpm --filter sii-engine typecheck",
+    "test:sii-engine": "corepack pnpm --filter sii-engine test",
     "prebuild": "corepack pnpm run build:sii-engine",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -113,7 +115,7 @@
     ],
     "moduleDirectories": [
       "node_modules",
-      "<rootDir>/../../sii-engine/node_modules"
+      "<rootDir>/../sii-engine/node_modules"
     ],
     "moduleNameMapper": {
       "^fast-xml-parser$": "<rootDir>/../node_modules/fast-xml-parser",

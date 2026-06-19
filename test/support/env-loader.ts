@@ -41,7 +41,7 @@ export function prepareMinistackTestEnv(): void {
 }
 
 export function prepareRealSiiTestEnv(): void {
-  loadEnvFiles(['.env.ministack', '.env.real-sii-tests.example', '.env'], {
+  loadEnvFiles(['.env.ministack', '.env'], {
     preferExistingProcessEnv: true,
   });
   inheritRealSiiFallbacksFromBootstrapEnv();

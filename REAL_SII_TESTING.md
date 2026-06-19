@@ -7,6 +7,8 @@ Esta carpeta usa dos tipos de pruebas:
 - `test/fiscal-real-sii-caf33.smoke-spec.ts`: valida solo scraping real de CAF 33 desde portal SII e importacion a custody.
 - `test/fiscal-real-sii-factura33.smoke-spec.ts`: valida obtencion/importacion de CAF 33 y emision real de factura 33.
 
+`sii-engine` esta incluido bajo `./sii-engine`; no es necesario clonar ni actualizar un repositorio hermano antes de ejecutar estas pruebas.
+
 ## Hito actual
 
 Al 2026-06-01, el smoke real ya permite validar este recorrido base sobre certificacion SII:
@@ -50,13 +52,7 @@ Ahi quedan `ted`, DTE/envelope firmados y metadata util para depurar una corrida
 
 ## Variables
 
-Copiar:
-
-```text
-.env.real-sii-tests.example
-```
-
-o usar directamente:
+Usar directamente:
 
 ```text
 .env
@@ -74,7 +70,7 @@ y completar al menos:
 
 `REAL_SII_TEST_FECHA_RESOLUCION` y `REAL_SII_TEST_NRO_RESOLUCION` deben corresponder a la resolucion DTE real del emisor en certificacion SII. El smoke real no usa defaults de ejemplo para esos campos. `REAL_SII_TEST_NRO_RESOLUCION` debe ser un entero mayor o igual a `0`, porque algunos emisores autorizados por SII efectivamente usan `0`.
 
-La custodia local usa ademas `.env.ministack`. El loader de smoke real lee `.env.ministack`, luego `.env.real-sii-tests.example` si existe, y finalmente `.env` para sobreescribir con la configuracion activa local.
+La custodia local usa ademas `.env.ministack`. El loader de smoke real lee `.env.ministack` y luego `.env`, respetando primero cualquier variable ya definida en el proceso.
 
 ## Secuencia recomendada
 

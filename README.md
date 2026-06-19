@@ -8,7 +8,7 @@ Este proyecto reemplaza la integracion antigua con SimpleAPI. No debe existir di
 
 - NestJS expone hoy una API REST util para desarrollo, certificacion e integracion, pero la topologia objetivo lo posiciona como backend fiscal privado para `business_app_back` u otros backends de negocio, no como API publica para Flutter.
 - `sii-engine` se usa como libreria local para XML, firma, token SII, envio, validaciones fiscales, parsers y sanitizacion.
-- `pnpm workspace` conecta este backend con la libreria local `sii-engine` mediante `"sii-engine": "workspace:*"`.
+- `sii-engine` vive dentro de este mismo repositorio y `pnpm workspace` lo conecta mediante `"sii-engine": "workspace:*"`.
 - La emision real de boleta electronica `tipoDTE=39` ya fue validada en certificacion SII con `trackId` y consulta de estado operativa, usando certificado y `CAF` persistidos por emisor.
 - El flujo real de factura electronica `tipoDTE=33` ya obtiene CAF mediante scraping, importa folios en custody, genera/firma el DTE, realiza el upload legacy y consulta `QueryEstUp`/`QueryEstDte`.
 - La custodia de certificados, password y `CAF` ya tiene una primera capa AWS-compatible por emisor. Lo que sigue pendiente para produccion es endurecer la persistencia de documentos, tracking, RVD y auditoria con storage transaccional, cifrado y auditable.
@@ -64,16 +64,22 @@ Responsabilidades:
 - Node.js compatible con NestJS 11.
 - Corepack habilitado.
 - pnpm `11.0.9`.
-- Este repositorio debe conservar `business-app-sii` y `sii-engine` como carpetas hermanas.
+- Un solo checkout de este repositorio contiene tanto el backend NestJS como `sii-engine`.
 - Certificado PFX valido para pruebas locales.
 - CAF XML valido para el RUT emisor y tipo DTE requerido.
 
 Estructura esperada en desarrollo:
 
 ```text
-business-app/
-  business-app-sii/
+business-app-sii/
+  package.json
+  pnpm-workspace.yaml
+  src/
+  test/
   sii-engine/
+    package.json
+    src/
+    test/
 ```
 
 `pnpm-workspace.yaml` debe incluir:
@@ -81,7 +87,7 @@ business-app/
 ```yaml
 packages:
   - .
-  - ../sii-engine
+  - ./sii-engine
 ```
 
 ## Instalacion
@@ -93,9 +99,24 @@ corepack enable
 corepack pnpm install
 ```
 
-La resolucion de `sii-engine` queda amarrada a la estructura del repositorio, no a una ruta absoluta del equipo. Mientras ambas carpetas sigan siendo hermanas, no hace falta editar rutas por PC o por usuario.
+La resolucion de `sii-engine` queda amarrada al subdirectorio versionado `./sii-engine`, sin rutas absolutas ni repositorios hermanos. Despues de un `git pull`, basta ejecutar:
 
-Los scripts principales del backend (`build`, `start`, `start:dev`, `test`, `test:e2e`) construyen primero la libreria hermana `sii-engine`, para que los tipos y artefactos en `dist/` existan aunque el paquete este enlazado por workspace.
+```powershell
+corepack pnpm install
+corepack pnpm run typecheck:sii-engine
+corepack pnpm run test:sii-engine
+corepack pnpm run build
+```
+
+Los scripts principales del backend (`build`, `start`, `start:dev`, `test`, `test:e2e`) construyen primero el paquete interno `sii-engine`, para que los tipos y artefactos en `dist/` existan antes de que NestJS los consuma.
+
+Los cambios de `sii-engine` requeridos por esta plataforma se versionan en este mismo repositorio. Esto mantiene la instalación reproducible y permite que otra persona actualice backend y motor fiscal con un solo pull.
+
+### Diferencia respecto de la arquitectura `d7b37a5`
+
+El commit `d7b37a5a7ed6992285f914557f89e895679797a2` establecio el workspace, pero resolvia `sii-engine` desde `../sii-engine`. En `feature/sii-hardening`, el motor fiscal esta incorporado en `./sii-engine` con los cambios de transporte legacy, XML, compatibilidad y consultas SOAP validados para CAF/factura 33.
+
+Esto significa que backend y motor fiscal comparten branch, commit, lockfile y ciclo de validacion. No se usa submodulo y no existe un segundo pull obligatorio.
 
 Verificar que `sii-engine` resuelve como workspace:
 

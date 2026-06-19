@@ -2,7 +2,7 @@
   "moduleFileExtensions": ["js", "json", "ts"],
   "moduleDirectories": [
     "node_modules",
-    "<rootDir>/../../sii-engine/node_modules"
+    "<rootDir>/../sii-engine/node_modules"
   ],
   "moduleNameMapper": {
     "^fast-xml-parser$": "<rootDir>/../node_modules/fast-xml-parser",
