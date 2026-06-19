@@ -7,25 +7,32 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { XMLParser } from 'fast-xml-parser';
+import forge from 'node-forge';
 import {
   BoletaSiiClient,
+  buildDdXml,
   buildDteXml,
+  buildEnvioDteXml,
   buildEnvioBoletaXml,
   buildTedXml,
   isBoletaTipoDTE,
+  LegacySiiClient,
   signDteDocument,
   signEnvelope,
   signTed,
   toPublicSendResult,
+  toPublicDteStatusQueryResult,
   toPublicPollingResult,
+  toPublicCafStatus,
   validateDteDocument,
   pollOnce,
   parseSendStatus,
   buildPrintedSampleArtifact,
   validateEdgeFiscalProvision,
   toPublicEdgeFiscalProvision,
-  verifyTedSignature,
-  verifyTedSignatureForDd,
+  splitRut,
+  TipoDTE,
+  type CafMaterial,
   type DteDocument,
   type EnvioDTECaratula,
   type FolioProvider,
@@ -39,6 +46,7 @@ import { IssuerContextDto } from '../fiscal/dto/issuer-context.dto';
 import { FiscalTokenProvider } from '../fiscal/fiscal-token.provider';
 import { sanitizePublicPayload } from '../common/security/sensitive-redaction.util';
 import { EmitBoletaDto } from './dto/emit-boleta.dto';
+import { EmitLegacyDteDto } from './dto/emit-legacy-dte.dto';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
 import { FiscalDocumentRepository } from './fiscal-document.repository';
 import { CreateEdgeProvisionDto } from './dto/create-edge-provision.dto';
@@ -46,6 +54,9 @@ import { CreateEdgeProvisionDto } from './dto/create-edge-provision.dto';
 @Injectable()
 export class FiscalDocumentService {
   private readonly boletaClient = new BoletaSiiClient({
+    userAgent: 'Mozilla/4.0 (compatible; PROG 1.0; Windows NT 5.0)',
+  });
+  private readonly legacyClient = new LegacySiiClient({
     userAgent: 'Mozilla/4.0 (compatible; PROG 1.0; Windows NT 5.0)',
   });
   private readonly inFlight = new Set<string>();
@@ -131,7 +142,9 @@ export class FiscalDocumentService {
         assignment.caf,
         frmt,
         signatureTimestamp,
-      );
+      )
+        .replace(/(<\/DD>\s*)<FRMA\b/, '$1<FRMT')
+        .replace(/<\/FRMA>\s*<\/TED>/, '</FRMT>\n</TED>');
       const dteXml = normalizeBoletaDteXml(
         buildDteXml(document, tedXml),
         signatureTimestamp,
@@ -148,7 +161,7 @@ export class FiscalDocumentService {
         rutEnvia: cert.rutFirmante,
         fechaResolucion: context.fechaResolucion,
         nroResolucion: context.nroResolucion,
-        fechaFirmaEnvio: new Date().toISOString().replace(/\.\d{3}Z$/, ''),
+        fechaFirmaEnvio: signatureTimestamp,
       };
 
       const envelope = buildEnvioBoletaXml(
@@ -205,7 +218,217 @@ export class FiscalDocumentService {
     }
   }
 
-  async getBoletaStatus(idOrTrackId: string, dto: IssuerContextDto) {
+  async emitirLegacyDte(dto: EmitLegacyDteDto, expectedTipoDTE: number) {
+    const context = await this.contextResolver.resolve(dto.context);
+    const input = dto.document as unknown as DteDocument;
+
+    this.assertLegacyDteType(input, expectedTipoDTE);
+    this.assertDocumentRutMatchesContext(input, context.rutEmisor);
+    this.assertLegacyBusinessRules(input);
+    this.assertReferencesForNotes(input);
+
+    const cert = await this.signingProvider.getSigningMaterial(context);
+    const idempotencyKey = `emit-${context.rutEmisor}-${input.idDoc.tipoDTE}-${input.idDoc.folio ?? JSON.stringify(input)}`;
+
+    if (this.inFlight.has(idempotencyKey)) {
+      throw new BadRequestException('Esta emision ya se encuentra en curso.');
+    }
+
+    this.inFlight.add(idempotencyKey);
+
+    try {
+      const assignment =
+        typeof input.idDoc.folio === 'number' && input.idDoc.folio > 0
+          ? await this.folios.reserveFolio(
+              context,
+              input.idDoc.tipoDTE,
+              input.idDoc.folio,
+            )
+          : await this.folios.getNextFolio(context, input.idDoc.tipoDTE);
+
+      const document: DteDocument = {
+        ...input,
+        idDoc: {
+          ...input.idDoc,
+          folio: assignment.folio,
+        },
+        emisor: {
+          ...input.emisor,
+          rutEmisor: context.rutEmisor,
+        },
+      };
+
+      validateDteDocument(document, context, assignment.caf);
+      this.assertLegacyBusinessRules(document);
+      this.assertReferencesForNotes(document);
+
+      const signatureTimestamp = formatSiiTimestamp();
+      const frmt = signTed(document, assignment.caf, signatureTimestamp);
+      if (
+        !verifyTedSignature(document, assignment.caf, frmt, signatureTimestamp)
+      ) {
+        throw new BadRequestException(
+          'No se pudo verificar localmente la firma del TED antes del envio al SII.',
+        );
+      }
+
+      const tedXml = buildTedXml(
+        document,
+        assignment.caf,
+        frmt,
+        signatureTimestamp,
+      );
+      const dteXml = normalizeLegacyDteXml(
+        buildDteXml(document, tedXml),
+        signatureTimestamp,
+      );
+      const signedDte = signDteDocument(dteXml, document, cert);
+      assertEmbeddedTedSignature(
+        signedDte,
+        assignment.caf,
+        'documento DTE firmado',
+      );
+
+      const caratula: EnvioDTECaratula = {
+        rutEmisor: context.rutEmisor,
+        rutEnvia: cert.rutFirmante,
+        fechaResolucion: context.fechaResolucion,
+        nroResolucion: context.nroResolucion,
+        fechaFirmaEnvio: signatureTimestamp,
+      };
+
+      const envelope = buildEnvioDteXml(
+        [{ document, tedXml, signedXml: signedDte }],
+        caratula,
+      );
+      const signedEnvelope = signEnvelope(
+        ensureEnvioDteSetDte(envelope),
+        cert,
+        "//*[@ID='SetDoc']",
+      );
+      assertEmbeddedTedSignature(
+        signedEnvelope,
+        assignment.caf,
+        'sobre firmado EnvioDTE',
+      );
+
+      const token = await this.tokenProvider.getToken(
+        context,
+        this.signingProvider,
+      );
+      const result = await this.legacyClient.send(
+        signedEnvelope,
+        context,
+        token.token,
+        cert.rutFirmante,
+      );
+
+      const internalId = randomUUID();
+      this.repository.create({
+        internalId,
+        tenantId: context.tenantId,
+        rutEmisor: context.rutEmisor,
+        tipoDTE: document.idDoc.tipoDTE,
+        folio: assignment.folio,
+        trackId: result.trackId,
+        status: result.status,
+        attempts: 0,
+        document,
+        tedXml,
+        signedDteXml: signedDte,
+        signedEnvelopeXml: signedEnvelope,
+        nextPollAt: new Date(Date.now() + 60000),
+      });
+
+      return {
+        internalId,
+        folio: assignment.folio,
+        ...toPublicSendResult(result),
+      };
+    } finally {
+      this.inFlight.delete(idempotencyKey);
+    }
+  }
+
+  async getFactura33Readiness(dto: IssuerContextDto) {
+    const context = await this.contextResolver.resolve(dto);
+    const checks: Array<{
+      name: string;
+      ok: boolean;
+      detail?: string;
+    }> = [];
+
+    let certificateAvailable = false;
+    try {
+      await this.signingProvider.getSigningMaterial(context);
+      certificateAvailable = true;
+      checks.push({ name: 'certificate', ok: true });
+    } catch (error) {
+      checks.push({
+        name: 'certificate',
+        ok: false,
+        detail: publicErrorDetail(error),
+      });
+    }
+
+    let tokenAvailable = false;
+    if (certificateAvailable) {
+      try {
+        await this.tokenProvider.getToken(context, this.signingProvider);
+        tokenAvailable = true;
+        checks.push({ name: 'siiAuth', ok: true });
+      } catch (error) {
+        checks.push({
+          name: 'siiAuth',
+          ok: false,
+          detail: publicErrorDetail(error),
+        });
+      }
+    } else {
+      checks.push({
+        name: 'siiAuth',
+        ok: false,
+        detail:
+          'No se verifica autenticacion SII porque no hay certificado disponible.',
+      });
+    }
+
+    const cafStatuses = await this.folios.getStatus(
+      context,
+      TipoDTE.FacturaElectronica,
+    );
+    const publicCafs = cafStatuses.map((status) => toPublicCafStatus(status));
+    const hasUsableCaf = publicCafs.some((status) => {
+      const remaining = Number(status.remaining ?? 0);
+      return (
+        Number.isFinite(remaining) &&
+        remaining > 0 &&
+        ['active', 'expiring_soon'].includes(String(status.status))
+      );
+    });
+    checks.push({
+      name: 'caf33',
+      ok: hasUsableCaf,
+      detail: hasUsableCaf
+        ? undefined
+        : 'No hay CAF 33 activo con folios disponibles para este emisor.',
+    });
+
+    const ready = certificateAvailable && tokenAvailable && hasUsableCaf;
+    return sanitizePublicPayload({
+      ready,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      rutEmisor: context.rutEmisor,
+      environment: context.environment,
+      checks,
+      cafs: publicCafs,
+      nextAction: ready
+        ? 'Factura 33 lista para emision.'
+        : 'Importar/obtener CAF 33 autorizado por SII antes de emitir factura.',
+    });
+  }
+
+  async getSendStatus(idOrTrackId: string, dto: IssuerContextDto) {
     const context = await this.contextResolver.resolve(dto);
 
     let record = this.repository.findById(idOrTrackId);
@@ -221,10 +444,14 @@ export class FiscalDocumentService {
     const trackIdToQuery = record?.trackId || idOrTrackId;
     const attempt = record ? record.attempts : 0;
 
+    const client =
+      record && isBoletaTipoDTE(record.tipoDTE)
+        ? this.boletaClient
+        : this.legacyClient;
     const pollResult = await pollOnce(
       trackIdToQuery,
       { context, token: token.token },
-      this.boletaClient,
+      client,
       attempt,
     );
 
@@ -237,6 +464,48 @@ export class FiscalDocumentService {
     }
 
     return toPublicPollingResult(pollResult);
+  }
+
+  async getBoletaStatus(idOrTrackId: string, dto: IssuerContextDto) {
+    return this.getSendStatus(idOrTrackId, dto);
+  }
+
+  async getDteStatus(internalId: string, dto: IssuerContextDto) {
+    const context = await this.contextResolver.resolve(dto);
+    const record = this.repository.findById(internalId);
+    if (!record) {
+      throw new NotFoundException('Documento no encontrado.');
+    }
+    if (isBoletaTipoDTE(record.tipoDTE)) {
+      throw new BadRequestException(
+        'La consulta estado DTE legacy no aplica a boletas; use estado de envio por trackId.',
+      );
+    }
+
+    const token = await this.tokenProvider.getToken(
+      context,
+      this.signingProvider,
+    );
+    const cert = await this.signingProvider.getSigningMaterial(context);
+    const rutConsultante = splitRut(cert.rutFirmante);
+    const rutReceptor = splitRut(record.document.receptor.rutRecep);
+    const result = await this.legacyClient.queryDteStatus(
+      {
+        rutConsultante: rutConsultante.rut,
+        dvConsultante: rutConsultante.dv,
+        tipoDTE: record.tipoDTE,
+        folio: record.folio,
+        fechaEmision: record.document.idDoc.fechaEmision,
+        montoTotal: record.document.totales.mntTotal,
+        rutReceptor: rutReceptor.rut,
+        dvReceptor: rutReceptor.dv,
+        token: token.token,
+      },
+      context,
+      token.token,
+    );
+
+    return toPublicDteStatusQueryResult(result);
   }
 
   getPrintedSample(internalId: string) {
@@ -305,6 +574,105 @@ export class FiscalDocumentService {
       throw error;
     }
   }
+
+  private assertLegacyDteType(
+    document: DteDocument,
+    expectedTipoDTE: number,
+  ): void {
+    const tipoDTE = Number(document.idDoc?.tipoDTE);
+    if (tipoDTE !== expectedTipoDTE) {
+      throw new BadRequestException(
+        `El endpoint solicitado solo acepta DTE ${expectedTipoDTE}.`,
+      );
+    }
+
+    if (isBoletaTipoDTE(tipoDTE)) {
+      throw new BadRequestException(
+        'Las boletas deben emitirse por el endpoint dedicado /documents/boletas.',
+      );
+    }
+
+    const supported = [
+      TipoDTE.FacturaElectronica,
+      TipoDTE.FacturaNoAfectaExentaElectronica,
+      TipoDTE.FacturaCompraElectronica,
+      TipoDTE.GuiaDespachoElectronica,
+      TipoDTE.NotaDebito,
+      TipoDTE.NotaCredito,
+    ].includes(tipoDTE);
+    if (!supported) {
+      throw new BadRequestException(
+        `DTE ${tipoDTE} aun no esta soportado por sii-engine en este host.`,
+      );
+    }
+  }
+
+  private assertDocumentRutMatchesContext(
+    document: DteDocument,
+    rutEmisor: string,
+  ): void {
+    if (document.emisor?.rutEmisor && document.emisor.rutEmisor !== rutEmisor) {
+      throw new BadRequestException(
+        `El RUT emisor del documento (${document.emisor.rutEmisor}) no coincide con el contexto configurado (${rutEmisor})`,
+      );
+    }
+  }
+
+  private assertReferencesForNotes(document: DteDocument): void {
+    const tipoDTE = Number(document.idDoc?.tipoDTE);
+    if (
+      tipoDTE !== Number(TipoDTE.NotaCredito) &&
+      tipoDTE !== Number(TipoDTE.NotaDebito)
+    ) {
+      return;
+    }
+
+    if (!document.referencias?.length) {
+      throw new BadRequestException(
+        'Las notas de credito/debito requieren al menos una referencia al DTE origen.',
+      );
+    }
+
+    for (const referencia of document.referencias) {
+      if (!referencia.codRef || ![1, 2, 3].includes(referencia.codRef)) {
+        throw new BadRequestException(
+          'Cada referencia de nota debe incluir codRef 1, 2 o 3.',
+        );
+      }
+      if (!referencia.razonRef?.trim()) {
+        throw new BadRequestException(
+          'Cada referencia de nota debe incluir razonRef.',
+        );
+      }
+      if (!referencia.indGlobal && !referencia.folioRef) {
+        throw new BadRequestException(
+          'Cada referencia no global debe incluir folioRef.',
+        );
+      }
+    }
+  }
+
+  private assertLegacyBusinessRules(document: DteDocument): void {
+    const tipoDTE = Number(document.idDoc?.tipoDTE);
+
+    if (
+      tipoDTE === Number(TipoDTE.FacturaNoAfectaExentaElectronica) &&
+      (document.totales?.iva ?? 0) > 0
+    ) {
+      throw new BadRequestException(
+        'La factura exenta DTE 34 no debe informar IVA mayor a cero.',
+      );
+    }
+
+    if (
+      tipoDTE === Number(TipoDTE.GuiaDespachoElectronica) &&
+      !document.idDoc?.indTraslado
+    ) {
+      throw new BadRequestException(
+        'La guia de despacho DTE 52 requiere indTraslado.',
+      );
+    }
+  }
 }
 
 const siiUploadResponseParser = new XMLParser({
@@ -337,6 +705,14 @@ function ensureEnvioBoletaSetDte(envelopeXml: string): string {
     .replace(/<\/EnvioBOLETA>\s*$/, '</SetDTE>\n</EnvioBOLETA>');
 }
 
+function ensureEnvioDteSetDte(envelopeXml: string): string {
+  if (envelopeXml.includes('<SetDTE')) return envelopeXml;
+
+  return envelopeXml
+    .replace(/(<EnvioDTE\b[^>]*>)/, '$1\n<SetDTE ID="SetDoc">')
+    .replace(/<\/EnvioDTE>\s*$/, '</SetDTE>\n</EnvioDTE>');
+}
+
 function normalizeBoletaDteXml(
   dteXml: string,
   signatureTimestamp: string,
@@ -360,6 +736,20 @@ function normalizeBoletaDteXml(
   }
 
   return withBoletaEmisorTags.replace(
+    /(\s*<\/Documento>)/,
+    `\n<TmstFirma>${signatureTimestamp}</TmstFirma>$1`,
+  );
+}
+
+function normalizeLegacyDteXml(
+  dteXml: string,
+  signatureTimestamp: string,
+): string {
+  if (dteXml.includes('<TmstFirma>')) {
+    return dteXml;
+  }
+
+  return dteXml.replace(
     /(\s*<\/Documento>)/,
     `\n<TmstFirma>${signatureTimestamp}</TmstFirma>$1`,
   );
@@ -454,6 +844,11 @@ function describeRawSiiResponse(error: unknown): string | undefined {
   return sanitizePublicPayload(diagnostic);
 }
 
+function publicErrorDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return sanitizePublicPayload(message || 'Error desconocido');
+}
+
 function extractSafeHtmlHint(html: string): string | undefined {
   const title = matchTagText(html, 'title');
   const bodyText = html
@@ -493,18 +888,12 @@ function normalizeHtmlText(html: string): string {
 function readHtmlInputValue(html: string, names: string[]): string {
   for (const name of names) {
     const nameThenValue = html.match(
-      new RegExp(
-        `name=["']${name}["'][^>]*value=["']([^"']+)["']`,
-        'i',
-      ),
+      new RegExp(`name=["']${name}["'][^>]*value=["']([^"']+)["']`, 'i'),
     );
     if (nameThenValue?.[1]) return nameThenValue[1].trim();
 
     const valueThenName = html.match(
-      new RegExp(
-        `value=["']([^"']+)["'][^>]*name=["']${name}["']`,
-        'i',
-      ),
+      new RegExp(`value=["']([^"']+)["'][^>]*name=["']${name}["']`, 'i'),
     );
     if (valueThenName?.[1]) return valueThenName[1].trim();
   }
@@ -542,11 +931,11 @@ function formatSiiTimestamp(date = new Date()): string {
 
 function assertEmbeddedTedSignature(
   xml: string,
-  caf: Parameters<typeof verifyTedSignature>[1],
+  caf: CafMaterial,
   label: string,
 ): void {
   const ddXml = extractXmlBlock(xml, 'DD');
-  const frmt = extractXmlValue(xml, 'FRMT');
+  const frmt = extractXmlValue(xml, 'FRMT') ?? extractTedFrmaValue(xml);
 
   if (!ddXml || !frmt) {
     throw new BadRequestException(
@@ -559,6 +948,53 @@ function assertEmbeddedTedSignature(
       `La firma TED embebida en el ${label} no coincide con el DD serializado.`,
     );
   }
+}
+
+function verifyTedSignature(
+  document: DteDocument,
+  caf: CafMaterial,
+  signatureBase64: string,
+  signatureTimestamp: string,
+): boolean {
+  return verifyTedSignatureForDd(
+    buildDdXml(document, caf, signatureTimestamp),
+    caf,
+    signatureBase64,
+  );
+}
+
+function verifyTedSignatureForDd(
+  ddXml: string,
+  caf: CafMaterial,
+  signatureBase64: string,
+): boolean {
+  try {
+    const publicKey = forge.pki.setRsaPublicKey(
+      new forge.jsbn.BigInteger(
+        forge.util.bytesToHex(forge.util.decode64(caf.da.rsaPk.modulus)),
+        16,
+      ),
+      new forge.jsbn.BigInteger(
+        forge.util.bytesToHex(forge.util.decode64(caf.da.rsaPk.exponent)),
+        16,
+      ),
+    );
+    const md = forge.md.sha1.create();
+    md.update(normalizeDdXmlForTedVerification(ddXml), 'utf8');
+    return publicKey.verify(
+      md.digest().bytes(),
+      forge.util.decode64(signatureBase64),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizeDdXmlForTedVerification(ddXml: string): string {
+  return ddXml
+    .trim()
+    .replace(/^<DD\b[^>]*>/, '<DD>')
+    .replace(/\s+xmlns(?::[A-Za-z0-9_-]+)?="[^"]*"/g, '');
 }
 
 function extractXmlBlock(xml: string, tagName: string): string | undefined {
@@ -574,6 +1010,14 @@ function extractXmlBlock(xml: string, tagName: string): string | undefined {
 function extractXmlValue(xml: string, tagName: string): string | undefined {
   const match = xml.match(
     new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)</${tagName}>`, 'i'),
+  );
+  const value = match?.[1]?.trim();
+  return value ? value : undefined;
+}
+
+function extractTedFrmaValue(xml: string): string | undefined {
+  const match = xml.match(
+    /<\/DD>\s*<FRMA\b[^>]*>([\s\S]*?)<\/FRMA>\s*<\/TED>/i,
   );
   const value = match?.[1]?.trim();
   return value ? value : undefined;
@@ -628,7 +1072,14 @@ function mapSiiUploadStatus(rawStatus: string): SendStatus {
 
 function stringifyXmlValue(value: unknown): string {
   if (value === undefined || value === null) return '';
-  if (typeof value !== 'object') return String(value).trim();
+  if (typeof value === 'string') return value.trim();
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+  ) {
+    return String(value).trim();
+  }
 
   if (Array.isArray(value)) {
     return value.map(stringifyXmlValue).filter(Boolean).join('; ');

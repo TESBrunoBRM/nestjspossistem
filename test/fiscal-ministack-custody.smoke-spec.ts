@@ -1,4 +1,5 @@
 import request from 'supertest';
+import type { Response } from 'supertest';
 import { INestApplication } from '@nestjs/common';
 import { SiiEnvironment, TipoDTE } from 'sii-engine';
 import { FiscalContextResolver } from '../src/fiscal/fiscal-context.resolver';
@@ -18,7 +19,7 @@ describe('Fiscal custody on Ministack (smoke)', () => {
   let app: INestApplication;
   let apiKey: string;
 
-  const tenantId = 'ministack-custody-smoke';
+  const tenantId = `ministack-custody-smoke-${Date.now()}-${process.pid}`;
   const rutEmisor = '76123456-0';
   const rutFirmante = '12345678-5';
   const pfxPassword = 'custody-smoke-password';
@@ -41,7 +42,7 @@ describe('Fiscal custody on Ministack (smoke)', () => {
       'Firmante smoke sin RUT explicito',
     );
 
-    const upsertResponse = await request(app.getHttpServer())
+    const upsertResponse = await request(testServer(app))
       .post('/api/fiscal/issuers')
       .set('x-api-key', apiKey)
       .send({
@@ -63,14 +64,15 @@ describe('Fiscal custody on Ministack (smoke)', () => {
       );
     }
 
-    expect(upsertResponse.body.data).toMatchObject({
+    const upsertData = responseData<FiscalIssuerApiData>(upsertResponse);
+    expect(upsertData).toMatchObject({
       tenantId,
       rutEmisor,
       environment: SiiEnvironment.Certificacion,
       custodyMode: 'aws',
     });
 
-    await request(app.getHttpServer())
+    await request(testServer(app))
       .post('/api/fiscal/folios/cafs')
       .set('x-api-key', apiKey)
       .send({
@@ -88,7 +90,7 @@ describe('Fiscal custody on Ministack (smoke)', () => {
     await app.close();
     app = await createFiscalTestApp();
 
-    const issuerResponse = await request(app.getHttpServer())
+    const issuerResponse = await request(testServer(app))
       .get('/api/fiscal/issuers')
       .set('x-api-key', apiKey)
       .query({
@@ -98,14 +100,15 @@ describe('Fiscal custody on Ministack (smoke)', () => {
       })
       .expect(200);
 
-    expect(issuerResponse.body.data).toMatchObject({
+    const issuerData = responseData<FiscalIssuerApiData>(issuerResponse);
+    expect(issuerData).toMatchObject({
       tenantId,
       rutEmisor,
       environment: SiiEnvironment.Certificacion,
       custodyMode: 'aws',
     });
 
-    const statuses = await request(app.getHttpServer())
+    const statuses = await request(testServer(app))
       .get('/api/fiscal/folios/status')
       .set('x-api-key', apiKey)
       .query({
@@ -116,21 +119,17 @@ describe('Fiscal custody on Ministack (smoke)', () => {
       })
       .expect(200);
 
-    expect(statuses.body.data).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          status: 'active',
-          remaining: 6,
-          caf: expect.objectContaining({
-            rutEmisor,
-            rangeStart: 900,
-            rangeEnd: 905,
-          }),
-        }),
-      ]),
+    const folioStatuses = responseData<FolioStatusApiData[]>(statuses);
+    const activeStatus = folioStatuses.find(
+      (status) =>
+        status.status === 'active' &&
+        status.caf.rutEmisor === rutEmisor &&
+        status.caf.rangeStart === 900 &&
+        status.caf.rangeEnd === 905,
     );
+    expect(activeStatus?.remaining).toBe(6);
 
-    const reserveResponse = await request(app.getHttpServer())
+    const reserveResponse = await request(testServer(app))
       .post('/api/fiscal/folios/reserve')
       .set('x-api-key', apiKey)
       .send({
@@ -144,14 +143,11 @@ describe('Fiscal custody on Ministack (smoke)', () => {
       })
       .expect(201);
 
-    expect(reserveResponse.body.data).toMatchObject({
-      folio: 900,
-      caf: expect.objectContaining({
-        rutEmisor,
-        rangeStart: 900,
-        rangeEnd: 905,
-      }),
-    });
+    const reserveData = responseData<FolioAssignmentApiData>(reserveResponse);
+    expect(reserveData.folio).toBe(900);
+    expect(reserveData.caf.rutEmisor).toBe(rutEmisor);
+    expect(reserveData.caf.rangeStart).toBe(900);
+    expect(reserveData.caf.rangeEnd).toBe(905);
 
     const contextResolver = app.get(FiscalContextResolver);
     const signingProvider = app.get(FiscalSigningProvider);
@@ -167,3 +163,48 @@ describe('Fiscal custody on Ministack (smoke)', () => {
     expect(material.privateKeyPem).toContain('BEGIN RSA PRIVATE KEY');
   });
 });
+
+type SuperTestTarget = Parameters<typeof request>[0];
+
+interface FiscalIssuerApiData {
+  tenantId: string;
+  rutEmisor: string;
+  environment: SiiEnvironment;
+  custodyMode: string;
+}
+
+interface FolioAssignmentApiData {
+  folio: number;
+  caf: {
+    rutEmisor: string;
+    rangeStart: number;
+    rangeEnd: number;
+  };
+}
+
+interface FolioStatusApiData {
+  status: string;
+  remaining: number;
+  caf: {
+    rutEmisor: string;
+    rangeStart: number;
+    rangeEnd: number;
+  };
+}
+
+function testServer(app: INestApplication): SuperTestTarget {
+  return app.getHttpServer() as SuperTestTarget;
+}
+
+function responseData<T>(response: Response): T {
+  const body: unknown = response.body;
+  if (!isRecord(body) || !('data' in body)) {
+    throw new Error('Respuesta HTTP sin envelope data.');
+  }
+
+  return body.data as T;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}

@@ -45,10 +45,7 @@ function allowedSensitiveKeysForRequest(request: {
     return ['cafXml'];
   }
 
-  if (
-    request.method === 'POST' &&
-    /\/api\/fiscal\/issuers(?:\?|$)/.test(url)
-  ) {
+  if (request.method === 'POST' && /\/api\/fiscal\/issuers(?:\?|$)/.test(url)) {
     return ['pfxBase64', 'pfxPassword'];
   }
 

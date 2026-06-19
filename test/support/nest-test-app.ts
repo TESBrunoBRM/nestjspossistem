@@ -2,7 +2,11 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard } from '@nestjs/throttler';
-import type { DynamicModule, ForwardReference, Type } from '@nestjs/common/interfaces';
+import type {
+  DynamicModule,
+  ForwardReference,
+  Type,
+} from '@nestjs/common/interfaces';
 import { TransformInterceptor } from '../../src/common/interceptors/transform.interceptor';
 import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.filter';
 

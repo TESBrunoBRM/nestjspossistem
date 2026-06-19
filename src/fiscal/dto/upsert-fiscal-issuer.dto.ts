@@ -1,4 +1,4 @@
-import { Transform, Type } from 'class-transformer';
+import { Transform, Type, type TransformFnParams } from 'class-transformer';
 import {
   IsBase64,
   IsEnum,
@@ -44,7 +44,7 @@ export class UpsertFiscalIssuerDto {
   nroResolucion: number;
 
   @IsBase64()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(trimStringValue)
   pfxBase64: string;
 
   @IsString()
@@ -55,4 +55,9 @@ export class UpsertFiscalIssuerDto {
   @IsString()
   @MinLength(3)
   rutFirmante?: string;
+}
+
+function trimStringValue(params: TransformFnParams): unknown {
+  const value: unknown = params.value;
+  return typeof value === 'string' ? value.trim() : value;
 }

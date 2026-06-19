@@ -17,7 +17,11 @@ import {
   S3Client,
   type ServerSideEncryption,
 } from '@aws-sdk/client-s3';
-import { GetParameterCommand, PutParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import {
+  GetParameterCommand,
+  PutParameterCommand,
+  SSMClient,
+} from '@aws-sdk/client-ssm';
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -68,7 +72,10 @@ interface CafRecordItem extends StoredFiscalCafRecord {
 @Injectable()
 export class FiscalCustodyService implements OnModuleInit {
   private readonly logger = new Logger(FiscalCustodyService.name);
-  private readonly memoryProfiles = new Map<string, StoredFiscalIssuerProfile>();
+  private readonly memoryProfiles = new Map<
+    string,
+    StoredFiscalIssuerProfile
+  >();
   private readonly memoryCertificates = new Map<
     string,
     { pfxBuffer: Buffer; password: string; material: CertificateMaterial }
@@ -91,9 +98,7 @@ export class FiscalCustodyService implements OnModuleInit {
   private readonly s3KmsKeyId: string | undefined;
   private readonly ssmKmsKeyId: string | undefined;
 
-  private readonly dynamo:
-    | DynamoDBDocumentClient
-    | undefined;
+  private readonly dynamo: DynamoDBDocumentClient | undefined;
   private readonly s3: S3Client | undefined;
   private readonly ssm: SSMClient | undefined;
 
@@ -104,21 +109,26 @@ export class FiscalCustodyService implements OnModuleInit {
     );
     this.tableName = this.configService.get<string>('AWS_FISCAL_DDB_TABLE');
     this.dynamoEndpoint =
-      trimToUndefined(this.configService.get<string>('AWS_FISCAL_DDB_ENDPOINT')) ??
-      this.globalEndpoint;
+      trimToUndefined(
+        this.configService.get<string>('AWS_FISCAL_DDB_ENDPOINT'),
+      ) ?? this.globalEndpoint;
     this.bucketName = this.configService.get<string>('AWS_FISCAL_S3_BUCKET');
     this.s3Endpoint =
-      trimToUndefined(this.configService.get<string>('AWS_FISCAL_S3_ENDPOINT')) ??
-      this.globalEndpoint;
+      trimToUndefined(
+        this.configService.get<string>('AWS_FISCAL_S3_ENDPOINT'),
+      ) ?? this.globalEndpoint;
     this.s3Prefix =
       this.configService.get<string>('AWS_FISCAL_S3_PREFIX')?.trim() ||
       'fiscal-custody';
     this.s3ForcePathStyle = parseBoolean(
-      this.configService.get<boolean | string>('AWS_FISCAL_S3_FORCE_PATH_STYLE'),
+      this.configService.get<boolean | string>(
+        'AWS_FISCAL_S3_FORCE_PATH_STYLE',
+      ),
     );
     this.ssmEndpoint =
-      trimToUndefined(this.configService.get<string>('AWS_FISCAL_SSM_ENDPOINT')) ??
-      this.globalEndpoint;
+      trimToUndefined(
+        this.configService.get<string>('AWS_FISCAL_SSM_ENDPOINT'),
+      ) ?? this.globalEndpoint;
     this.parameterPrefix =
       this.configService.get<string>('AWS_FISCAL_SSM_PREFIX')?.trim() ||
       '/business-app-sii/fiscal';
@@ -203,7 +213,11 @@ export class FiscalCustodyService implements OnModuleInit {
     };
 
     if (this.backendEnabled()) {
-      await this.saveIssuerCertificateToAws(profile, input.pfxBuffer, input.pfxPassword);
+      await this.saveIssuerCertificateToAws(
+        profile,
+        input.pfxBuffer,
+        input.pfxPassword,
+      );
     } else {
       const existing = this.memoryProfiles.get(profileKey(profile));
       this.memoryProfiles.set(profileKey(profile), {
@@ -279,7 +293,9 @@ export class FiscalCustodyService implements OnModuleInit {
       return material;
     }
 
-    const pfxBuffer = await this.readS3ObjectBuffer(profile.certificateObjectKey);
+    const pfxBuffer = await this.readS3ObjectBuffer(
+      profile.certificateObjectKey,
+    );
     const password = await this.readSecureString(
       profile.certificatePasswordParameterName,
     );
@@ -354,7 +370,7 @@ export class FiscalCustodyService implements OnModuleInit {
         }),
       );
     } else {
-      await this.enqueueMemory(async () => {
+      await this.enqueueMemory(() => {
         const key = cafStorageKey(record);
         const existing = this.memoryCafs.get(key);
         this.memoryCafs.set(key, {
@@ -421,7 +437,10 @@ export class FiscalCustodyService implements OnModuleInit {
     const records = await this.listCafRecords(context, tipoDTE);
 
     for (const record of records) {
-      if (this.resolveCafStatus(record, this.remainingFolios(record)) === 'expired') {
+      if (
+        this.resolveCafStatus(record, this.remainingFolios(record)) ===
+        'expired'
+      ) {
         continue;
       }
       if (record.nextFolio > record.rangeEnd) {
@@ -432,7 +451,9 @@ export class FiscalCustodyService implements OnModuleInit {
         return this.enqueueMemory(async () => {
           const latest = this.memoryCafs.get(cafStorageKey(record));
           if (!latest || latest.nextFolio > latest.rangeEnd) {
-            throw new BadRequestException(`Folios agotados para DTE ${tipoDTE}`);
+            throw new BadRequestException(
+              `Folios agotados para DTE ${tipoDTE}`,
+            );
           }
           const folio = latest.nextFolio;
           latest.nextFolio += 1;
@@ -526,9 +547,9 @@ export class FiscalCustodyService implements OnModuleInit {
         new UpdateCommand({
           TableName: this.tableName!,
           Key: this.cafKey(record),
-          UpdateExpression: 'SET nextFolio = :nextFolio, updatedAt = :updatedAt',
-          ConditionExpression:
-            'nextFolio <= :folio AND :folio <= :rangeEnd',
+          UpdateExpression:
+            'SET nextFolio = :nextFolio, updatedAt = :updatedAt',
+          ConditionExpression: 'nextFolio <= :folio AND :folio <= :rangeEnd',
           ExpressionAttributeValues: {
             ':nextFolio': folio + 1,
             ':updatedAt': new Date().toISOString(),
@@ -762,14 +783,29 @@ export class FiscalCustodyService implements OnModuleInit {
     return this.s3KmsKeyId ? 'aws:kms' : 'AES256';
   }
 
-  private profileKey(profile: Pick<StoredFiscalIssuerProfile, 'tenantId' | 'rutEmisor' | 'environment'>) {
+  private profileKey(
+    profile: Pick<
+      StoredFiscalIssuerProfile,
+      'tenantId' | 'rutEmisor' | 'environment'
+    >,
+  ) {
     return {
       pk: issuerPartitionKey(profile.tenantId, profile.rutEmisor),
       sk: profileSortKey(profile.environment),
     };
   }
 
-  private cafKey(record: Pick<StoredFiscalCafRecord, 'tenantId' | 'rutEmisor' | 'environment' | 'tipoDTE' | 'rangeStart' | 'rangeEnd'>) {
+  private cafKey(
+    record: Pick<
+      StoredFiscalCafRecord,
+      | 'tenantId'
+      | 'rutEmisor'
+      | 'environment'
+      | 'tipoDTE'
+      | 'rangeStart'
+      | 'rangeEnd'
+    >,
+  ) {
     return {
       pk: issuerPartitionKey(record.tenantId, record.rutEmisor),
       sk: cafSortKey(
@@ -782,7 +818,10 @@ export class FiscalCustodyService implements OnModuleInit {
   }
 
   private certificateObjectKey(
-    input: Pick<UpsertFiscalIssuerInput, 'tenantId' | 'rutEmisor' | 'environment'>,
+    input: Pick<
+      UpsertFiscalIssuerInput,
+      'tenantId' | 'rutEmisor' | 'environment'
+    >,
   ): string {
     return [
       this.s3Prefix,
@@ -796,7 +835,10 @@ export class FiscalCustodyService implements OnModuleInit {
   }
 
   private certificatePasswordParameterName(
-    input: Pick<UpsertFiscalIssuerInput, 'tenantId' | 'rutEmisor' | 'environment'>,
+    input: Pick<
+      UpsertFiscalIssuerInput,
+      'tenantId' | 'rutEmisor' | 'environment'
+    >,
   ): string {
     return [
       this.parameterPrefix,
@@ -808,10 +850,7 @@ export class FiscalCustodyService implements OnModuleInit {
     ].join('/');
   }
 
-  private cafObjectKey(
-    context: IssuerContext,
-    caf: CafMaterial,
-  ): string {
+  private cafObjectKey(context: IssuerContext, caf: CafMaterial): string {
     if (!context.tenantId) {
       throw new BadRequestException(
         'tenantId es requerido para construir clave S3 del CAF',
@@ -870,7 +909,10 @@ export class FiscalCustodyService implements OnModuleInit {
 }
 
 function buildCertificateRef(
-  input: Pick<UpsertFiscalIssuerInput, 'tenantId' | 'rutEmisor' | 'environment'>,
+  input: Pick<
+    UpsertFiscalIssuerInput,
+    'tenantId' | 'rutEmisor' | 'environment'
+  >,
 ): string {
   return [
     'issuer',
@@ -936,14 +978,24 @@ function sanitizeParameterSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9\-_.]/g, '_');
 }
 
-function profileKey(profile: Pick<StoredFiscalIssuerProfile, 'tenantId' | 'rutEmisor' | 'environment'>): string {
+function profileKey(
+  profile: Pick<
+    StoredFiscalIssuerProfile,
+    'tenantId' | 'rutEmisor' | 'environment'
+  >,
+): string {
   return `${profile.tenantId}:${normalizeRut(profile.rutEmisor)}:${profile.environment}`;
 }
 
 function cafStorageKey(
   record: Pick<
     StoredFiscalCafRecord,
-    'tenantId' | 'rutEmisor' | 'environment' | 'tipoDTE' | 'rangeStart' | 'rangeEnd'
+    | 'tenantId'
+    | 'rutEmisor'
+    | 'environment'
+    | 'tipoDTE'
+    | 'rangeStart'
+    | 'rangeEnd'
   >,
 ): string {
   return [
@@ -964,12 +1016,18 @@ function compareCafRecords(
 }
 
 function stripProfileItem(item: IssuerProfileItem): StoredFiscalIssuerProfile {
-  const { pk: _pk, sk: _sk, entityType: _entityType, ...rest } = item;
+  const { pk, sk, entityType, ...rest } = item;
+  void pk;
+  void sk;
+  void entityType;
   return rest;
 }
 
 function stripCafItem(item: CafRecordItem): StoredFiscalCafRecord {
-  const { pk: _pk, sk: _sk, entityType: _entityType, ...rest } = item;
+  const { pk, sk, entityType, ...rest } = item;
+  void pk;
+  void sk;
+  void entityType;
   return rest;
 }
 

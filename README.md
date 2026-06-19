@@ -10,13 +10,16 @@ Este proyecto reemplaza la integracion antigua con SimpleAPI. No debe existir di
 - `sii-engine` se usa como libreria local para XML, firma, token SII, envio, validaciones fiscales, parsers y sanitizacion.
 - `pnpm workspace` conecta este backend con la libreria local `sii-engine` mediante `"sii-engine": "workspace:*"`.
 - La emision real de boleta electronica `tipoDTE=39` ya fue validada en certificacion SII con `trackId` y consulta de estado operativa, usando certificado y `CAF` persistidos por emisor.
+- El flujo real de factura electronica `tipoDTE=33` ya obtiene CAF mediante scraping, importa folios en custody, genera/firma el DTE, realiza el upload legacy y consulta `QueryEstUp`/`QueryEstDte`.
 - La custodia de certificados, password y `CAF` ya tiene una primera capa AWS-compatible por emisor. Lo que sigue pendiente para produccion es endurecer la persistencia de documentos, tracking, RVD y auditoria con storage transaccional, cifrado y auditable.
 
-## Hito de avance al 2026-06-01
+## Hito de avance al 2026-06-19
 
 - `test/fiscal-real-sii.smoke-spec.ts` ya cubre token real, custodia por emisor, `CAF`, emision real y consulta de estado.
 - `pnpm run test:real-sii:existing-caf` queda como regresion manual corta para la vertical boleta.
-- El foco siguiente pasa a ser persistencia durable del lifecycle fiscal, RVD, evidencia de certificacion e integracion con `business_app_back`.
+- `test/fiscal-real-sii-caf33.smoke-spec.ts` verifica scraping e importacion real de CAF 33.
+- `test/fiscal-real-sii-factura33.smoke-spec.ts` verifica token, CAF 33, emision, upload con `TRACKID`, consulta de envio, consulta DTE y muestra impresa.
+- El foco siguiente pasa a ser datos tributarios reales por emisor, persistencia durable del lifecycle fiscal, RVD, evidencia de certificacion e integracion con `business_app_back`.
 
 ## Responsabilidad de este proyecto
 
@@ -343,6 +346,86 @@ SII_PORTAL_HEADLESS=false
 ```
 
 El diagnostico redacted no debe exponer token, cookies, CAF completo ni claves.
+
+### Consultar folios CAF disponibles por scraping
+
+```http
+POST /api/fiscal/folios/availability
+```
+
+Body:
+
+```json
+{
+  "context": {
+    "fechaResolucion": "2020-01-01",
+    "nroResolucion": 0
+  },
+  "tipoDTE": 33
+}
+```
+
+Funcionamiento:
+
+- Obtiene token SII usando certificado.
+- Entra al portal SII de certificacion/produccion.
+- Consulta el formulario de timbraje hasta la pantalla de confirmacion.
+- Lee `Disponible` y `Maximo Autorizado`.
+- No presiona `Obtener`, no descarga CAF y no consume/genera nuevos folios.
+
+Respuesta publica:
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "available",
+    "method": "sii_portal_availability_scraping",
+    "rutEmisor": "11111111-1",
+    "environment": "CERTIFICACION",
+    "tipoDTE": 33,
+    "quantityProbed": 1,
+    "availableFolios": 10,
+    "maxAuthorizedFolios": 20,
+    "retryable": false
+  }
+}
+```
+
+`Disponible 0 / Maximo Autorizado 0` no es una negativa concluyente. El portal puede mostrar ambos contadores en cero y aun permitir solicitar/descargar el CAF. Por eso el endpoint conserva los valores como diagnostico, devuelve `status: "available"` y el flujo de adquisicion intenta igualmente la solicitud directa.
+
+### Emitir factura electronica 33
+
+```http
+POST /api/fiscal/documents/facturas
+```
+
+El flujo:
+
+1. Reutiliza un CAF 33 activo o solicita uno mediante `POST /api/fiscal/folios/requests`.
+2. Reserva el siguiente folio en custody.
+3. Genera TED, DTE y `EnvioDTE` con firmas verificadas localmente.
+4. Envia el multipart legacy requerido por `DTEUpload`.
+5. Interpreta `<RECEPCIONDTE>`, conserva el `TRACKID` como texto y consulta:
+   - `QueryEstUp.jws` para estado del envio.
+   - `QueryEstDte.jws` para estado del documento.
+
+Comandos reales de certificacion:
+
+```powershell
+ministack
+corepack pnpm run ministack:bootstrap
+corepack pnpm run test:real-sii:caf33
+corepack pnpm run test:real-sii:factura33
+```
+
+Para reutilizar un CAF 33 existente:
+
+```powershell
+corepack pnpm run test:real-sii:factura33:existing-caf
+```
+
+El smoke completo fue verificado con sus cinco fases en verde. Obtener `STATUS=0` y `TRACKID` confirma que el SII recibio el upload. No implica por si solo que el DTE haya sido aceptado tributariamente: `QueryEstUp` puede informar documentos rechazados si razon social, giro, actividad, direccion, sucursal, resolucion u otros datos del emisor no coinciden con el ambiente SII.
 
 ### Emitir boleta electronica
 
@@ -699,11 +782,16 @@ El upload llego al SII, pero el RUT del certificado no esta autorizado para firm
 
 Revisar los artefactos bajo `secure/real-sii-tests/artifacts/<folio>/` y comparar `trackId`, estado consultado y XML de respuesta. El smoke real deja evidencia suficiente para diagnosticar diferencias entre lo que responde la API y lo que informa el SII por correo.
 
+### Upload con `TRACKID`, pero `RECHAZADOS > 0`
+
+El transporte y la autenticacion funcionaron, pero el procesamiento tributario rechazo uno o mas DTE. Consultar `QueryEstUp` y `QueryEstDte`, y revisar que los datos del emisor coincidan exactamente con el registro de certificacion SII. No reemplazar esos datos con valores demo en una validacion formal.
+
 ## Pendientes principales
 
 - Persistencia durable para documentos emitidos, RVD, trackId, polling y auditoria.
 - Automatizar RVD diario y conciliacion completa de boletas por dia.
 - Validacion XSD real, golden fixtures y evidencia formal de certificacion.
 - Endpoint host-to-host en `business_app_back` para onboarding y sincronizacion de emisores contra `business-app-sii`.
-- Soporte completo de factura 33, nota de credito 61 y otros DTE fuera del flujo boleta.
+- Completar certificacion funcional de factura 33 con los datos tributarios oficiales de cada emisor.
+- Completar nota de credito 61 y los demas DTE fuera de boleta/factura.
 - Workers de polling con locks, backoff y rate limits.

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import request from 'supertest';
+import type { Response } from 'supertest';
 import { INestApplication } from '@nestjs/common';
 import { FiscalTokenProvider } from '../src/fiscal/fiscal-token.provider';
 import { FiscalContextResolver } from '../src/fiscal/fiscal-context.resolver';
@@ -23,12 +24,13 @@ describe('Real SII certification flow (smoke)', () => {
   let trackId: string | undefined;
 
   const tenantId = optionalEnv('REAL_SII_TEST_TENANT_ID') || 'real-sii-smoke';
-  const merchantId = optionalEnv('REAL_SII_TEST_MERCHANT_ID') || 'merchant-main';
+  const merchantId =
+    optionalEnv('REAL_SII_TEST_MERCHANT_ID') || 'merchant-main';
   const branchId = optionalEnv('REAL_SII_TEST_BRANCH_ID') || 'branch-001';
   const rutEmisor =
     optionalEnv('REAL_SII_TEST_RUT_EMISOR') ||
     optionalEnv('SII_RUT_EMISOR') ||
-    '78086484-2';
+    '';
   const rutFirmante =
     optionalEnv('REAL_SII_TEST_RUT_FIRMANTE') ||
     optionalEnv('SII_RUT_FIRMANTE') ||
@@ -56,6 +58,11 @@ describe('Real SII certification flow (smoke)', () => {
   );
 
   beforeAll(async () => {
+    if (!rutEmisor) {
+      throw new Error(
+        'Falta REAL_SII_TEST_RUT_EMISOR o SII_RUT_EMISOR para las pruebas reales del SII.',
+      );
+    }
     if (!existsSync(pfxPath)) {
       throw new Error(
         `Falta el archivo PFX para smoke real del SII en ${pfxPath}. Colocalo en secure/real-sii-tests/, secure/ o ajusta REAL_SII_TEST_PFX_PATH.`,
@@ -107,7 +114,7 @@ describe('Real SII certification flow (smoke)', () => {
   it('stores issuer in custody and acquires a real SII token', async () => {
     const pfxBase64 = readFileSync(pfxPath).toString('base64');
 
-    const upsertResponse = await request(app.getHttpServer())
+    const upsertResponse = await request(testServer(app))
       .post('/api/fiscal/issuers')
       .set('x-api-key', apiKey)
       .send({
@@ -124,7 +131,8 @@ describe('Real SII certification flow (smoke)', () => {
       })
       .expect(201);
 
-    expect(upsertResponse.body.data).toMatchObject({
+    const upsertData = responseData<FiscalIssuerApiData>(upsertResponse);
+    expect(upsertData).toMatchObject({
       tenantId,
       rutEmisor,
       environment,
@@ -179,7 +187,7 @@ describe('Real SII certification flow (smoke)', () => {
 
     const today = new Date().toISOString().slice(0, 10);
     const sendSpy = captureBoletaUploadAttempts();
-    const response = await request(app.getHttpServer())
+    const response = await request(testServer(app))
       .post('/api/fiscal/documents/boletas')
       .set('x-api-key', apiKey)
       .send({
@@ -229,16 +237,17 @@ describe('Real SII certification flow (smoke)', () => {
 
     sendSpy.mockRestore();
 
-    internalId = response.body.data.internalId;
-    trackId = response.body.data.trackId;
+    const emitData = responseData<EmitBoletaApiData>(response);
+    internalId = emitData.internalId;
+    trackId = emitData.trackId;
 
-    expect(response.body.data.internalId).toBeTruthy();
-    expect(response.body.data.trackId).toBeTruthy();
-    expect(response.body.data.folio).toBeGreaterThan(0);
-    expect(response.body.data.status).toBeTruthy();
+    expect(emitData.internalId).toBeTruthy();
+    expect(emitData.trackId).toBeTruthy();
+    expect(emitData.folio).toBeGreaterThan(0);
+    expect(emitData.status).toBeTruthy();
 
     writeDebugArtifacts(app, {
-      internalId: internalId!,
+      internalId,
       tenantId,
       rutEmisor,
       environment,
@@ -250,7 +259,7 @@ describe('Real SII certification flow (smoke)', () => {
     expect(internalId).toBeTruthy();
     expect(trackId).toBeTruthy();
 
-    const response = await request(app.getHttpServer())
+    const response = await request(testServer(app))
       .get(`/api/fiscal/documents/${internalId}/status`)
       .set('x-api-key', apiKey)
       .query({
@@ -260,10 +269,53 @@ describe('Real SII certification flow (smoke)', () => {
       })
       .expect(200);
 
-    expect(response.body.data.trackId).toBe(trackId);
-    expect(response.body.data.normalizedStatus).toBeTruthy();
+    const statusData = responseData<SendStatusApiData>(response);
+    expect(statusData.trackId).toBe(trackId);
+    expect(statusData.normalizedStatus).toBeTruthy();
   });
 });
+
+type SuperTestTarget = Parameters<typeof request>[0];
+
+interface FiscalIssuerApiData {
+  tenantId: string;
+  rutEmisor: string;
+  environment: SiiEnvironment;
+  custodyMode: string;
+}
+
+interface EmitBoletaApiData {
+  internalId: string;
+  trackId: string;
+  folio: number;
+  status: string;
+}
+
+interface SendStatusApiData {
+  trackId: string;
+  normalizedStatus: string;
+}
+
+interface CafRequestApiData {
+  status: string;
+}
+
+function testServer(app: INestApplication): SuperTestTarget {
+  return app.getHttpServer() as SuperTestTarget;
+}
+
+function responseData<T>(response: Response): T {
+  const body: unknown = response.body;
+  if (!isRecord(body) || !('data' in body)) {
+    throw new Error('Respuesta HTTP sin envelope data.');
+  }
+
+  return body.data as T;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 function hasActiveCaf(statuses: unknown): boolean {
   if (!Array.isArray(statuses)) return false;
@@ -281,7 +333,10 @@ function hasActiveCaf(statuses: unknown): boolean {
 }
 
 function parseEnvironment(value: string): SiiEnvironment {
-  return value === SiiEnvironment.Produccion
+  const normalized = value.trim().toUpperCase();
+  return normalized === 'PRODUCCION' ||
+    normalized === 'PRODUCTION' ||
+    normalized === '1'
     ? SiiEnvironment.Produccion
     : SiiEnvironment.Certificacion;
 }
@@ -297,7 +352,7 @@ async function ensureUsableCafAvailable(input: {
   cafQuantity: number;
   allowRequest: boolean;
 }): Promise<void> {
-  const initialStatusResponse = await request(input.app.getHttpServer())
+  const initialStatusResponse = await request(testServer(input.app))
     .get('/api/fiscal/folios/status')
     .set('x-api-key', input.apiKey)
     .query({
@@ -308,7 +363,7 @@ async function ensureUsableCafAvailable(input: {
     })
     .expect(200);
 
-  if (hasActiveCaf(initialStatusResponse.body.data)) {
+  if (hasActiveCaf(responseData<unknown>(initialStatusResponse))) {
     return;
   }
 
@@ -318,7 +373,7 @@ async function ensureUsableCafAvailable(input: {
     );
   }
 
-  const cafResponse = await request(input.app.getHttpServer())
+  const cafResponse = await request(testServer(input.app))
     .post('/api/fiscal/folios/requests')
     .set('x-api-key', input.apiKey)
     .send({
@@ -335,9 +390,9 @@ async function ensureUsableCafAvailable(input: {
     })
     .expect(201);
 
-  expect(cafResponse.body.data.status).toBe('imported');
+  expect(responseData<CafRequestApiData>(cafResponse).status).toBe('imported');
 
-  const finalStatusResponse = await request(input.app.getHttpServer())
+  const finalStatusResponse = await request(testServer(input.app))
     .get('/api/fiscal/folios/status')
     .set('x-api-key', input.apiKey)
     .query({
@@ -348,7 +403,7 @@ async function ensureUsableCafAvailable(input: {
     })
     .expect(200);
 
-  expect(hasActiveCaf(finalStatusResponse.body.data)).toBe(true);
+  expect(hasActiveCaf(responseData<unknown>(finalStatusResponse))).toBe(true);
 }
 
 function parseBooleanEnv(value?: string): boolean {
@@ -370,23 +425,31 @@ function resolveRealSiiTestPfxPath(): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
+type BoletaSend = (
+  ...args: Parameters<BoletaSiiClient['send']>
+) => ReturnType<BoletaSiiClient['send']>;
+
 function captureBoletaUploadAttempts(): jest.SpyInstance {
-  const originalSend = BoletaSiiClient.prototype.send;
+  const originalSendCandidate: unknown = Object.getOwnPropertyDescriptor(
+    BoletaSiiClient.prototype,
+    'send',
+  )?.value;
+
+  if (typeof originalSendCandidate !== 'function') {
+    throw new Error('No se pudo capturar BoletaSiiClient.send original.');
+  }
+
+  const originalSend = originalSendCandidate as BoletaSend;
 
   return jest
     .spyOn(BoletaSiiClient.prototype, 'send')
-    .mockImplementation(async function (
+    .mockImplementation(function (
       this: BoletaSiiClient,
-      signedEnvelope: string,
-      ...args: Parameters<BoletaSiiClient['send']> extends [
-        string,
-        ...infer Rest,
-      ]
-        ? Rest
-        : never
+      ...params: Parameters<BoletaSiiClient['send']>
     ) {
+      const [signedEnvelope] = params;
       writeUploadAttemptArtifacts(signedEnvelope);
-      return originalSend.apply(this, [signedEnvelope, ...args]);
+      return originalSend(...params);
     });
 }
 

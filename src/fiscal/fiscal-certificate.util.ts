@@ -31,9 +31,7 @@ export function loadCertificateMaterialFromPem(
   return loadCertificateFromPem(certificatePem, privateKeyPem);
 }
 
-export function normalizeFingerprint(
-  fingerprint?: string,
-): string | undefined {
+export function normalizeFingerprint(fingerprint?: string): string | undefined {
   return fingerprint?.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
 }
 
@@ -118,7 +116,18 @@ function findMatchingP12Pair(
 }
 
 function extractCertificateName(cert: forge.pki.Certificate): string {
-  const commonName = cert.subject.getField('CN')?.value;
-  const organization = cert.subject.getField('O')?.value;
+  const commonNameField: unknown = cert.subject.getField('CN');
+  const organizationField: unknown = cert.subject.getField('O');
+  const commonName = certificateFieldValue(commonNameField);
+  const organization = certificateFieldValue(organizationField);
   return commonName ?? organization ?? 'Firmante fiscal';
+}
+
+function certificateFieldValue(field: unknown): string | undefined {
+  if (!isRecord(field)) return undefined;
+  return typeof field.value === 'string' ? field.value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

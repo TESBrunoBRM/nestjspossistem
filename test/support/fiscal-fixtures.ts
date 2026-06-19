@@ -21,12 +21,9 @@ export function createTestPfx(
   cert.setIssuer(attrs);
   cert.sign(keys.privateKey);
 
-  const p12Asn1 = forge.pkcs12.toPkcs12Asn1(
-    keys.privateKey,
-    [cert],
-    password,
-    { algorithm: '3des' },
-  );
+  const p12Asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], password, {
+    algorithm: '3des',
+  });
   const p12Der = forge.asn1.toDer(p12Asn1).getBytes();
 
   return {
@@ -56,12 +53,9 @@ export function createTestPfxWithoutRut(
   cert.setIssuer(attrs);
   cert.sign(keys.privateKey);
 
-  const p12Asn1 = forge.pkcs12.toPkcs12Asn1(
-    keys.privateKey,
-    [cert],
-    password,
-    { algorithm: '3des' },
-  );
+  const p12Asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], password, {
+    algorithm: '3des',
+  });
   const p12Der = forge.asn1.toDer(p12Asn1).getBytes();
 
   return {

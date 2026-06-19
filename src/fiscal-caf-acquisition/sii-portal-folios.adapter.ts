@@ -17,17 +17,24 @@ import {
 import {
   SiiEnvironment,
   assertCafAcquisitionRequest,
+  normalizeRut,
   parseCaf,
+  type CafMaterial,
   type CertificateMaterial,
   type CafAcquisitionProvider,
   type CafAcquisitionRequest,
   type CafAcquisitionResult,
+  type IssuerContext,
   type SigningProvider,
 } from 'sii-engine';
 import { sanitizePublicPayload } from '../common/security/sensitive-redaction.util';
 import { FISCAL_SIGNING_PROVIDER } from '../fiscal/fiscal-provider.tokens';
 import { FiscalTokenProvider } from '../fiscal/fiscal-token.provider';
 import { ALLOWED_CAF_ACQUISITION_TIPO_DTE } from './dto/request-caf-acquisition.dto';
+import {
+  type FolioAvailabilityRequest,
+  type FolioAvailabilityResult,
+} from './fiscal-folio-availability.types';
 
 const CAF_XML_PATTERN = /<AUTORIZACION[\s\S]*?<\/AUTORIZACION>/i;
 const DEFAULT_CERTIFICATE_ORIGINS = [
@@ -56,6 +63,12 @@ interface BrowserCookie {
   httpOnly?: boolean;
   secure?: boolean;
   sameSite?: 'Strict' | 'Lax' | 'None';
+}
+
+interface ExtractedFolioAvailability {
+  quantityRequested?: number;
+  availableFolios: number;
+  maxAuthorizedFolios: number;
 }
 
 @Injectable()
@@ -89,6 +102,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     try {
       const cafXml = await this.downloadCafXmlWithSession(request);
       const caf = parseCaf(cafXml);
+      this.assertDownloadedCafMatchesRequest(caf, request);
 
       return {
         requestId: randomUUID(),
@@ -119,6 +133,91 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     }
   }
 
+  async queryAvailableFolios(
+    request: FolioAvailabilityRequest,
+  ): Promise<FolioAvailabilityResult> {
+    assertCafAcquisitionRequest(
+      {
+        context: request.context,
+        tipoDTE: request.tipoDTE,
+        quantity: 1,
+        method: request.method,
+      },
+      {
+        allowedTipoDTE: ALLOWED_CAF_ACQUISITION_TIPO_DTE,
+        maxQuantity: this.maxQuantity(),
+      },
+    );
+
+    if (!this.automationEnabled()) {
+      return this.manualAvailabilityActionRequiredResult(
+        request,
+        'Automatizacion del portal SII deshabilitada. Configure SII_PORTAL_CAF_AUTOMATION_ENABLED=true en un entorno controlado.',
+      );
+    }
+
+    const requestedAt = new Date();
+
+    try {
+      const availability = await this.queryAvailableFoliosWithSession(request);
+      const zeroAvailabilityCounters =
+        availability.availableFolios === 0 &&
+        availability.maxAuthorizedFolios === 0;
+
+      return {
+        requestId: randomUUID(),
+        status: 'available',
+        method: 'sii_portal_availability_scraping',
+        context: request.context,
+        tipoDTE: request.tipoDTE,
+        quantityProbed: availability.quantityRequested ?? 1,
+        availableFolios: availability.availableFolios,
+        maxAuthorizedFolios: availability.maxAuthorizedFolios,
+        requestedAt,
+        completedAt: new Date(),
+        detail: zeroAvailabilityCounters
+          ? `El portal SII muestra Disponible 0 y Maximo Autorizado 0 para ${tipoDteDisplayName(
+              request.tipoDTE,
+            )}, pero esos contadores no son concluyentes: la solicitud directa de CAF puede estar habilitada.`
+          : undefined,
+        retryable: false,
+      };
+    } catch (error) {
+      this.logger.warn(this.safeErrorMessage(error));
+      return {
+        requestId: randomUUID(),
+        status: 'failed',
+        method: 'sii_portal_availability_scraping',
+        context: request.context,
+        tipoDTE: request.tipoDTE,
+        quantityProbed: 1,
+        requestedAt,
+        completedAt: new Date(),
+        detail: this.safeErrorMessage(error),
+        retryable: true,
+      };
+    }
+  }
+
+  private assertDownloadedCafMatchesRequest(
+    caf: CafMaterial,
+    request: CafAcquisitionRequest,
+  ): void {
+    if (Number(caf.da.tipoDTE) !== Number(request.tipoDTE)) {
+      throw new Error(
+        `El portal SII devolvio CAF tipo ${caf.da.tipoDTE}, pero se solicito tipo ${request.tipoDTE}. Revise la seleccion del tipo de documento antes de importar folios.`,
+      );
+    }
+
+    if (
+      normalizeRut(caf.da.rutEmisor) !== normalizeRut(request.context.rutEmisor)
+    ) {
+      throw new Error(
+        `El portal SII devolvio CAF para RUT ${caf.da.rutEmisor}, pero el contexto solicita ${request.context.rutEmisor}.`,
+      );
+    }
+  }
+
   private async downloadCafXmlWithSession(
     request: CafAcquisitionRequest,
   ): Promise<string> {
@@ -142,11 +241,55 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       : new Error('Error desconocido en portal SII');
   }
 
+  private async queryAvailableFoliosWithSession(
+    request: FolioAvailabilityRequest,
+  ): Promise<ExtractedFolioAvailability> {
+    let forceRefresh = false;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= SESSION_RETRY_LIMIT; attempt += 1) {
+      try {
+        return await this.queryAvailableFoliosAttempt(request, forceRefresh);
+      } catch (error) {
+        lastError = error;
+        if (!this.shouldRefreshSession(error, forceRefresh)) throw error;
+
+        this.tokenProvider.invalidate(request.context);
+        forceRefresh = true;
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('Error desconocido en portal SII');
+  }
+
+  private async queryAvailableFoliosAttempt(
+    request: FolioAvailabilityRequest,
+    forceRefresh: boolean,
+  ): Promise<ExtractedFolioAvailability> {
+    if (!this.httpScrapingEnabled()) {
+      throw new Error(
+        'Consulta de folios disponibles requiere SII_PORTAL_HTTP_SCRAPING_ENABLED distinto de false.',
+      );
+    }
+
+    const authToken = await this.tokenProvider.getToken(
+      request.context,
+      this.signingProvider,
+      forceRefresh,
+    );
+    const cert = await this.signingProvider.getSigningMaterial(request.context);
+
+    return this.queryAvailableFoliosViaHttp(request, cert, authToken.token);
+  }
+
   private async downloadCafXmlAttempt(
     request: CafAcquisitionRequest,
     forceRefresh: boolean,
   ): Promise<string> {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sii-caf-'));
+    let httpFailure: string | undefined;
 
     try {
       const authToken = await this.tokenProvider.getToken(
@@ -159,10 +302,17 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       );
       if (this.httpScrapingEnabled()) {
         try {
-          return await this.downloadCafXmlViaHttp(request, cert);
+          return await this.downloadCafXmlViaHttp(
+            request,
+            cert,
+            authToken.token,
+          );
         } catch (error) {
-          if (!this.playwrightFallbackEnabled()) throw error;
-          this.logger.warn(this.safeErrorMessage(error));
+          if (!this.playwrightFallbackEnabled()) {
+            throw error;
+          }
+          httpFailure = this.safeErrorMessage(error);
+          this.logger.warn(httpFailure);
         }
       }
 
@@ -178,7 +328,17 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
           authToken.token,
         );
         await this.addCertificateLoginCookies(context, request, cert);
-        return await this.downloadCafXml(context, request);
+        try {
+          return await this.downloadCafXml(context, request);
+        } catch (error) {
+          if (error instanceof SiiPortalSessionError || !httpFailure) {
+            throw error;
+          }
+
+          throw new Error(
+            `Scraping HTTP no obtuvo CAF: ${httpFailure}. Fallback Playwright fallo: ${this.safeErrorMessage(error)}`,
+          );
+        }
       } finally {
         await context.close();
       }
@@ -190,11 +350,26 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
   private async downloadCafXmlViaHttp(
     request: CafAcquisitionRequest,
     cert: CertificateMaterial,
+    token: string,
   ): Promise<string> {
     const loginCookies = await this.fetchCertificateLoginCookies(request, cert);
     const cookieJar = new Map(
       loginCookies.map((cookie) => [cookieKey(cookie), cookie]),
     );
+    for (const domain of this.httpTokenCookieDomains(
+      request.context.environment,
+    )) {
+      const cookie: BrowserCookie = {
+        name: TOKEN_COOKIE_NAME,
+        value: token,
+        domain,
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      };
+      cookieJar.set(cookieKey(cookie), cookie);
+    }
     const baseUrl = this.portalBaseUrl(request.context.environment);
     const { body: rutBody, dv } = splitRut(request.context.rutEmisor);
     const startUrl = this.startUrl(request.context.environment);
@@ -210,6 +385,8 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       '/cvc_cgi/dte/of_genera_folio',
       baseUrl,
     ).toString();
+
+    await this.portalHttpGet(startUrl, baseUrl, cert, cookieJar);
 
     await this.portalHttpPost(
       firstStepUrl,
@@ -248,8 +425,20 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     );
 
     const hiddenFields = extractInputValues(confirmationHtml);
+    const generateFormUrl =
+      findFirstFormActionUrl(confirmationHtml, confirmUrl) ?? generateUrl;
+    if (
+      Object.keys(hiddenFields).length === 0 &&
+      !extractCafXml(confirmationHtml) &&
+      !findCafDownloadUrl(confirmationHtml, confirmUrl)
+    ) {
+      throw new Error(
+        `El portal SII no entrego campos de confirmacion para generar CAF. ${extractFinalResponseHints(confirmationHtml)}`,
+      );
+    }
+
     const cafResponse = await this.portalHttpPost(
-      generateUrl,
+      generateFormUrl,
       {
         ...hiddenFields,
         ACEPTAR: 'Obtener',
@@ -259,7 +448,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       cookieJar,
     );
     let cafXml = extractCafXml(cafResponse);
-    const cafDownloadUrl = findCafDownloadUrl(cafResponse, generateUrl);
+    const cafDownloadUrl = findCafDownloadUrl(cafResponse, generateFormUrl);
     if (!cafXml && cafDownloadUrl) {
       const downloadResponse = await this.portalHttpGet(
         cafDownloadUrl,
@@ -289,12 +478,108 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     }
 
     if (!cafXml) {
+      const zeroAvailabilityCounters = detectZeroAvailabilityCounters(
+        confirmationHtml,
+        cafResponse,
+      );
+      const availabilityHint = zeroAvailabilityCounters
+        ? ` El portal muestra Disponible 0 y Maximo Autorizado 0 para ${tipoDteDisplayName(
+            request.tipoDTE,
+          )}; esos contadores no son concluyentes y se intentara el fallback del navegador.`
+        : '';
+
       throw new Error(
-        `El portal SII no devolvio CAF XML despues de confirmar folios. ${extractFinalResponseHints(cafResponse)}`,
+        `El portal SII no devolvio CAF XML despues de confirmar folios.${availabilityHint} ${extractFinalResponseHints(cafResponse)}. Confirmacion: ${extractFinalResponseHints(confirmationHtml)}`,
       );
     }
 
     return cafXml;
+  }
+
+  private async queryAvailableFoliosViaHttp(
+    request: FolioAvailabilityRequest,
+    cert: CertificateMaterial,
+    token: string,
+  ): Promise<ExtractedFolioAvailability> {
+    const loginCookies = await this.fetchCertificateLoginCookies(request, cert);
+    const cookieJar = new Map(
+      loginCookies.map((cookie) => [cookieKey(cookie), cookie]),
+    );
+    for (const domain of this.httpTokenCookieDomains(
+      request.context.environment,
+    )) {
+      const cookie: BrowserCookie = {
+        name: TOKEN_COOKIE_NAME,
+        value: token,
+        domain,
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      };
+      cookieJar.set(cookieKey(cookie), cookie);
+    }
+
+    const baseUrl = this.portalBaseUrl(request.context.environment);
+    const { body: rutBody, dv } = splitRut(request.context.rutEmisor);
+    const startUrl = this.startUrl(request.context.environment);
+    const firstStepUrl = new URL(
+      '/cvc_cgi/dte/of_solicita_folios_dcto',
+      baseUrl,
+    ).toString();
+    const confirmUrl = new URL(
+      '/cvc_cgi/dte/of_confirma_folio',
+      baseUrl,
+    ).toString();
+
+    await this.portalHttpGet(startUrl, baseUrl, cert, cookieJar);
+
+    await this.portalHttpPost(
+      firstStepUrl,
+      {
+        RUT_EMP: rutBody,
+        DV_EMP: dv,
+        ACEPTAR: 'Continuar',
+      },
+      startUrl,
+      cert,
+      cookieJar,
+    );
+
+    const confirmationHtml = await this.portalHttpPost(
+      confirmUrl,
+      {
+        RUT_EMP: rutBody,
+        DV_EMP: dv,
+        FOLIO_INICIAL: '0',
+        COD_DOCTO: String(request.tipoDTE),
+        AFECTO_IVA: 'S',
+        ANOTACION: 'N',
+        CON_CREDITO: '',
+        CON_AJUSTE: '',
+        FACTOR: '',
+        CANT_DOCTOS: '1',
+        ACEPTAR: 'Solicitar',
+      },
+      firstStepUrl,
+      cert,
+      cookieJar,
+    );
+    this.assertHttpPortalStep(
+      confirmationHtml,
+      'El portal SII no entrego disponibilidad de folios',
+    );
+
+    const availability = extractFolioAvailability(confirmationHtml);
+    if (!availability) {
+      throw new Error(
+        `El portal SII no devolvio cantidad de folios disponibles. ${extractFinalResponseHints(
+          confirmationHtml,
+        )}`,
+      );
+    }
+
+    return availability;
   }
 
   private async portalHttpGet(
@@ -303,21 +588,27 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     cert: CertificateMaterial,
     cookieJar: Map<string, BrowserCookie>,
   ): Promise<string> {
-    const response = await axios.get<string>(url, {
-      headers: {
-        Cookie: cookieHeaderForUrl(cookieJar, url),
-        Referer: referer,
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-      httpsAgent: new HttpsAgent({
-        cert: cert.certificatePem,
-        key: cert.privateKeyPem,
-      }),
-      maxRedirects: 0,
-      timeout: this.timeoutMs(),
-      validateStatus: () => true,
-    });
+    const response = await axios
+      .get<string>(url, {
+        headers: {
+          Cookie: cookieHeaderForUrl(cookieJar, url),
+          Referer: referer,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        httpsAgent: new HttpsAgent({
+          cert: cert.certificatePem,
+          key: cert.privateKeyPem,
+        }),
+        maxRedirects: 0,
+        timeout: this.timeoutMs(),
+        validateStatus: () => true,
+      })
+      .catch((error: unknown) => {
+        throw new Error(
+          `Portal SII GET ${sanitizeUrl(url)} fallo: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
 
     storeSetCookies(cookieJar, response.headers['set-cookie'], url);
     const responseText = String(response.data ?? '');
@@ -336,22 +627,28 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     cert: CertificateMaterial,
     cookieJar: Map<string, BrowserCookie>,
   ): Promise<string> {
-    const response = await axios.post<string>(url, new URLSearchParams(params), {
-      headers: {
-        Cookie: cookieHeaderForUrl(cookieJar, url),
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Referer: referer,
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-      httpsAgent: new HttpsAgent({
-        cert: cert.certificatePem,
-        key: cert.privateKeyPem,
-      }),
-      maxRedirects: 0,
-      timeout: this.timeoutMs(),
-      validateStatus: () => true,
-    });
+    const response = await axios
+      .post<string>(url, new URLSearchParams(params), {
+        headers: {
+          Cookie: cookieHeaderForUrl(cookieJar, url),
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Referer: referer,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        httpsAgent: new HttpsAgent({
+          cert: cert.certificatePem,
+          key: cert.privateKeyPem,
+        }),
+        maxRedirects: 0,
+        timeout: this.timeoutMs(),
+        validateStatus: () => true,
+      })
+      .catch((error: unknown) => {
+        throw new Error(
+          `Portal SII POST ${sanitizeUrl(url)} fallo: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
 
     storeSetCookies(cookieJar, response.headers['set-cookie'], url);
     const responseText = String(response.data ?? '');
@@ -406,10 +703,19 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       void this.captureCafResponse(response, responseXmlCandidates);
     });
 
-    await page.goto(this.startUrl(request.context.environment), {
-      waitUntil: 'commit',
-      timeout: this.timeoutMs(),
-    });
+    try {
+      await page.goto(this.startUrl(request.context.environment), {
+        waitUntil: 'commit',
+        timeout: this.timeoutMs(),
+      });
+    } catch (error) {
+      throw new Error(
+        await this.portalDebugMessage(
+          page,
+          `No se pudo abrir el portal SII para solicitar CAF: ${this.safeErrorMessage(error)}`,
+        ),
+      );
+    }
     await page
       .waitForLoadState('domcontentloaded', { timeout: shortTimeout() })
       .catch(() => undefined);
@@ -533,11 +839,14 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
   }
 
   private async fetchCertificateLoginCookies(
-    request: CafAcquisitionRequest,
+    request: { context: IssuerContext },
     cert: CertificateMaterial,
   ): Promise<BrowserCookie[]> {
     const jar = new Map<string, BrowserCookie>();
-    let currentUrl = this.certificateLoginUrl(request.context.environment, cert);
+    let currentUrl = this.certificateLoginUrl(
+      request.context.environment,
+      cert,
+    );
     const httpsAgent = new HttpsAgent({
       cert: cert.certificatePem,
       key: cert.privateKeyPem,
@@ -560,7 +869,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
 
       if (!isRedirectStatus(response.status)) break;
 
-      const location = response.headers.location;
+      const location = firstHeaderValue(response.headers.location as unknown);
       if (!location) break;
       currentUrl = new URL(location, currentUrl).toString();
     }
@@ -716,12 +1025,58 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
         const locator = scope.locator(selector).first();
         if (!(await isUsable(locator))) continue;
 
+        if (await this.tryReuseReadonlyValue(locator, value)) {
+          return true;
+        }
+
         await locator.fill(value, { timeout: shortTimeout() });
         return true;
       }
     }
 
     return false;
+  }
+
+  private async tryReuseReadonlyValue(
+    locator: Locator,
+    expectedValue: string,
+  ): Promise<boolean> {
+    const disabled = await locator
+      .isDisabled({ timeout: shortTimeout() })
+      .catch(() => false);
+    if (disabled) return false;
+
+    const editable = await locator
+      .isEditable({ timeout: shortTimeout() })
+      .catch(() => false);
+    if (editable) return false;
+
+    const currentValue = await this.readLocatorValue(locator);
+    return (
+      currentValue !== undefined &&
+      normalizeFieldValue(currentValue) === normalizeFieldValue(expectedValue)
+    );
+  }
+
+  private async readLocatorValue(
+    locator: Locator,
+  ): Promise<string | undefined> {
+    const inputValue = await locator
+      .inputValue({ timeout: shortTimeout() })
+      .catch(() => undefined);
+    if (inputValue !== undefined) return inputValue;
+
+    const attributeValue = await locator
+      .getAttribute('value')
+      .catch(() => undefined);
+    if (attributeValue !== undefined && attributeValue !== null) {
+      return attributeValue;
+    }
+
+    const innerText = await locator
+      .innerText({ timeout: shortTimeout() })
+      .catch(() => undefined);
+    return innerText?.trim() ? innerText : undefined;
   }
 
   private async tryClick(
@@ -830,6 +1185,23 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     };
   }
 
+  private manualAvailabilityActionRequiredResult(
+    request: FolioAvailabilityRequest,
+    detail: string,
+  ): FolioAvailabilityResult {
+    return {
+      requestId: randomUUID(),
+      status: 'manual_action_required',
+      method: 'sii_portal_availability_scraping',
+      context: request.context,
+      tipoDTE: request.tipoDTE,
+      quantityProbed: 1,
+      requestedAt: new Date(),
+      detail,
+      retryable: false,
+    };
+  }
+
   private automationEnabled(): boolean {
     return (
       this.configService.get<string>('SII_PORTAL_CAF_AUTOMATION_ENABLED') ===
@@ -846,8 +1218,9 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
 
   private playwrightFallbackEnabled(): boolean {
     return (
-      this.configService.get<string>('SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED') ===
-      'true'
+      this.configService.get<string>(
+        'SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED',
+      ) === 'true'
     );
   }
 
@@ -923,6 +1296,22 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
         ];
   }
 
+  private httpTokenCookieDomains(environment: SiiEnvironment): string[] {
+    const configured = this.selectorList(
+      'SII_PORTAL_HTTP_TOKEN_COOKIE_DOMAINS',
+      [],
+    );
+    if (configured.length > 0) return configured;
+
+    const portalHost =
+      environment === SiiEnvironment.Produccion
+        ? 'palena.sii.cl'
+        : 'maullin.sii.cl';
+    return this.tokenCookieDomains(environment).filter(
+      (domain) => domain.replace(/^\./, '').toLowerCase() !== portalHost,
+    );
+  }
+
   private browserExecutablePath(): string | undefined {
     const configured = this.configService.get<string>(
       'SII_PORTAL_BROWSER_EXECUTABLE_PATH',
@@ -940,8 +1329,9 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
 
   private browserClientCertificatesEnabled(): boolean {
     return (
-      this.configService.get<string>('SII_PORTAL_BROWSER_CLIENT_CERT_ENABLED') ===
-      'true'
+      this.configService.get<string>(
+        'SII_PORTAL_BROWSER_CLIENT_CERT_ENABLED',
+      ) !== 'false'
     );
   }
 
@@ -1124,6 +1514,14 @@ function storeSetCookies(
   }
 }
 
+function firstHeaderValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return undefined;
+
+  const header = value.find((item): item is string => typeof item === 'string');
+  return header;
+}
+
 function parseSetCookie(
   header: string,
   currentUrl: string,
@@ -1194,9 +1592,7 @@ function cookieMatchesHost(cookie: BrowserCookie, host: string): boolean {
 
 function domainMatchesSii(domain: string): boolean {
   const normalizedDomain = domain.replace(/^\./, '').toLowerCase();
-  return (
-    normalizedDomain === 'sii.cl' || normalizedDomain.endsWith('.sii.cl')
-  );
+  return normalizedDomain === 'sii.cl' || normalizedDomain.endsWith('.sii.cl');
 }
 
 function continueSelectors(): string[] {
@@ -1271,6 +1667,11 @@ function tipoDteLabels(tipoDTE: number): string[] {
   return labels[tipoDTE] ?? [String(tipoDTE)];
 }
 
+function tipoDteDisplayName(tipoDTE: number): string {
+  const labels = tipoDteLabels(tipoDTE);
+  return labels[1] ? `${labels[1]} (${tipoDTE})` : `DTE ${tipoDTE}`;
+}
+
 async function isUsable(locator: {
   count(): Promise<number>;
   isVisible(options?: { timeout?: number }): Promise<boolean>;
@@ -1293,6 +1694,10 @@ function splitRut(rut: string): { body: string; dv: string } {
   return { body, dv };
 }
 
+function normalizeFieldValue(value: string): string {
+  return value.replace(/\./g, '').replace(/\s+/g, '').toUpperCase().trim();
+}
+
 function extractCafXml(value: string): string | undefined {
   return (
     value.match(CAF_XML_PATTERN)?.[0] ??
@@ -1301,7 +1706,9 @@ function extractCafXml(value: string): string | undefined {
 }
 
 function findCafDownloadUrl(html: string, baseUrl: string): string | undefined {
-  for (const match of html.matchAll(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+  for (const match of html.matchAll(
+    /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+  )) {
     const href = decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? '');
     if (!/(caf|xml|folio|genera)/i.test(href)) continue;
     return new URL(href, baseUrl).toString();
@@ -1318,6 +1725,19 @@ function findFormActionUrl(
   for (const match of html.matchAll(/<form\b[^>]*>/gi)) {
     const action = extractHtmlAttribute(match[0], 'action');
     if (!action || !actionPattern.test(action)) continue;
+    return new URL(action, baseUrl).toString();
+  }
+
+  return undefined;
+}
+
+function findFirstFormActionUrl(
+  html: string,
+  baseUrl: string,
+): string | undefined {
+  for (const match of html.matchAll(/<form\b[^>]*>/gi)) {
+    const action = extractHtmlAttribute(match[0], 'action');
+    if (!action) continue;
     return new URL(action, baseUrl).toString();
   }
 
@@ -1341,8 +1761,17 @@ function extractFinalResponseHints(html: string): string {
     .map((match) => extractHtmlAttribute(match[1], 'name'))
     .filter((value): value is string => Boolean(value))
     .slice(0, 20);
+  const text = safeDebugValue(
+    decodeHtmlEntities(html)
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    800,
+  );
 
-  return `Hints: ${JSON.stringify({ forms, hrefs, inputs })}`;
+  return `Hints: ${JSON.stringify({ forms, hrefs, inputs, text })}`;
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -1451,6 +1880,62 @@ function hasAuthenticatedPortalMarker(normalizedText: string): boolean {
 function hasSessionFailureMarker(normalizedText: string): boolean {
   return /INGRESE SU RUT|CLAVE TRIBUTARIA|NO AUTORIZADO|SESION EXPIRADA|NO SE ENCUENTRA AUTENTICADO|ACCESO A SERVIDOR POR CERTIFICADO/.test(
     normalizedText,
+  );
+}
+
+function detectZeroAvailabilityCounters(...htmlOrMessages: string[]): boolean {
+  const text = normalizePortalTextForMatch(htmlOrMessages.join(' '));
+  return (
+    /\bDISPONIBLE\s+0\b/.test(text) &&
+    /\b(?:MAXIMO|M.{0,4}XIMO)\s+AUTORIZADO\s+0\b/.test(text)
+  );
+}
+
+function extractFolioAvailability(
+  html: string,
+): ExtractedFolioAvailability | undefined {
+  const text = normalizePortalTextForMatch(html);
+  const availableFolios = extractPortalIntegerAfter(text, /\bDISPONIBLE\b/);
+  const maxAuthorizedFolios = extractPortalIntegerAfter(
+    text,
+    /\b(?:MAXIMO|M.{0,4}XIMO)\s+AUTORIZADO\b/,
+  );
+
+  if (availableFolios === undefined || maxAuthorizedFolios === undefined) {
+    return undefined;
+  }
+
+  return {
+    quantityRequested: extractPortalIntegerAfter(
+      text,
+      /\bCANTIDAD\s+SOLICITADA\b/,
+    ),
+    availableFolios,
+    maxAuthorizedFolios,
+  };
+}
+
+function extractPortalIntegerAfter(
+  text: string,
+  label: RegExp,
+): number | undefined {
+  const source = label.source.replace(/^\^/, '').replace(/\$$/, '');
+  const flags = label.flags.includes('i') ? label.flags : `${label.flags}i`;
+  const pattern = new RegExp(`${source}\\s*:?\\s*([0-9][0-9.]*)`, flags);
+  const match = text.match(pattern);
+  if (!match?.[1]) return undefined;
+
+  const value = Number(match[1].replace(/\./g, ''));
+  return Number.isInteger(value) ? value : undefined;
+}
+
+function normalizePortalTextForMatch(value: string): string {
+  return normalizeForMatch(
+    decodeHtmlEntities(value)
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' '),
   );
 }
 

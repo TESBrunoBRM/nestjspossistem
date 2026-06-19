@@ -1,7 +1,18 @@
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 
-export function loadEnvFiles(files: string[]): void {
+export function loadEnvFiles(
+  files: string[],
+  options: { preferExistingProcessEnv?: boolean } = {},
+): void {
+  const preservedKeys = options.preferExistingProcessEnv
+    ? new Set(
+        Object.keys(process.env).filter(
+          (key) => process.env[key] !== undefined,
+        ),
+      )
+    : undefined;
+
   for (const file of files) {
     const resolved = resolve(process.cwd(), file);
     if (!existsSync(resolved)) continue;
@@ -16,6 +27,7 @@ export function loadEnvFiles(files: string[]): void {
 
       const key = trimmed.slice(0, separatorIndex).trim();
       const rawValue = trimmed.slice(separatorIndex + 1).trim();
+      if (preservedKeys?.has(key)) continue;
       process.env[key] = stripQuotes(rawValue);
     }
   }
@@ -29,7 +41,9 @@ export function prepareMinistackTestEnv(): void {
 }
 
 export function prepareRealSiiTestEnv(): void {
-  loadEnvFiles(['.env.ministack', '.env', '.env.real-sii-tests']);
+  loadEnvFiles(['.env.ministack', '.env.real-sii-tests.example', '.env'], {
+    preferExistingProcessEnv: true,
+  });
   inheritRealSiiFallbacksFromBootstrapEnv();
   process.env.NODE_ENV = 'test';
   process.env.API_KEY_FRONTEND =

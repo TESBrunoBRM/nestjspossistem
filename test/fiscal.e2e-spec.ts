@@ -199,6 +199,10 @@ describe('FiscalController (e2e)', () => {
     await request(app.getHttpServer())
       .post('/api/fiscal/folios/requests')
       .expect(401);
+
+    await request(app.getHttpServer())
+      .get('/api/fiscal/documents/facturas/readiness')
+      .expect(401);
   });
 
   it('POST /api/fiscal/folios/cafs imports CAF and returns public metadata', async () => {
@@ -256,6 +260,51 @@ describe('FiscalController (e2e)', () => {
       ]),
     );
     expectPublicPayloadSafe(response.body);
+  });
+
+  it('GET /api/fiscal/documents/facturas/readiness reports factura 33 readiness safely', async () => {
+    const missing = await request(app.getHttpServer())
+      .get('/api/fiscal/documents/facturas/readiness')
+      .set('x-api-key', 'test-api-key')
+      .query(folioContext())
+      .expect(200);
+
+    expect(missing.body.success).toBe(true);
+    expect(missing.body.data).toMatchObject({
+      ready: false,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      rutEmisor: '76123456-0',
+    });
+    expect(missing.body.data.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'caf33', ok: false }),
+      ]),
+    );
+    expectPublicPayloadSafe(missing.body);
+
+    await request(app.getHttpServer())
+      .post('/api/fiscal/folios/cafs')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        cafXml: cafXml('76123456-0', 700, 705, TipoDTE.FacturaElectronica),
+      })
+      .expect(201);
+
+    const ready = await request(app.getHttpServer())
+      .get('/api/fiscal/documents/facturas/readiness')
+      .set('x-api-key', 'test-api-key')
+      .query(folioContext())
+      .expect(200);
+
+    expect(ready.body.success).toBe(true);
+    expect(ready.body.data.ready).toBe(true);
+    expect(ready.body.data.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'caf33', ok: true }),
+      ]),
+    );
+    expectPublicPayloadSafe(ready.body);
   });
 
   it('POST /api/fiscal/folios/reserve reserves a specific folio', async () => {
@@ -513,7 +562,12 @@ function folioContext() {
   };
 }
 
-function cafXml(rutEmisor: string, start: number, end: number): string {
+function cafXml(
+  rutEmisor: string,
+  start: number,
+  end: number,
+  tipoDTE = TipoDTE.BoletaElectronica,
+): string {
   const keys = forge.pki.rsa.generateKeyPair(512);
   const privateKeyAsn1 = forge.pki.privateKeyToAsn1(keys.privateKey);
   const privateKeyDer = forge.asn1.toDer(privateKeyAsn1).getBytes();
@@ -533,7 +587,7 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
     <DA>
       <RE>${rutEmisor}</RE>
       <RS>EMISOR TEST</RS>
-      <TD>39</TD>
+      <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
       <FA>2026-01-01</FA>
       <RSAPK>

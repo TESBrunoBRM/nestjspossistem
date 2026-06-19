@@ -9,7 +9,9 @@ import { loadCertificateMaterialFromP12 } from '../fiscal/fiscal-certificate.uti
 import { FiscalCustodyService } from './fiscal-custody.service';
 
 jest.mock('../fiscal/fiscal-certificate.util', () => {
-  const actual = jest.requireActual('../fiscal/fiscal-certificate.util');
+  const actual = jest.requireActual<
+    typeof import('../fiscal/fiscal-certificate.util')
+  >('../fiscal/fiscal-certificate.util');
   return {
     ...actual,
     loadCertificateMaterialFromP12: jest.fn(),
@@ -121,11 +123,7 @@ function mockConfigService(values: Record<string, unknown>): ConfigService {
   } as unknown as ConfigService;
 }
 
-function cafMaterial(
-  rutEmisor: string,
-  rangeStart: number,
-  rangeEnd: number,
-) {
+function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
   const rawXml = `<?xml version="1.0" encoding="ISO-8859-1"?>
 <AUTORIZACION>
   <CAF version="1.0">

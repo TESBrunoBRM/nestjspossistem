@@ -8,7 +8,6 @@ import {
   SiiEnvironment,
   SiiSendError,
   TipoDTE,
-  verifyTedSignatureForDd,
   type IssuerContext,
 } from 'sii-engine';
 import { FiscalDocumentService } from './fiscal-document.service';
@@ -57,7 +56,9 @@ const generatedCert = createTestCert();
 const mockBoletaSend = jest.fn();
 const mockBoletaQueryStatus = jest.fn();
 const mockBoletaSendRvd = jest.fn();
+const mockLegacySend = jest.fn();
 const mockLegacyQueryStatus = jest.fn();
+const mockLegacyQueryDteStatus = jest.fn();
 
 // Mock the Sii Clients from sii-engine
 jest.mock('sii-engine', () => {
@@ -70,7 +71,9 @@ jest.mock('sii-engine', () => {
       sendRvd: mockBoletaSendRvd,
     })),
     LegacySiiClient: jest.fn().mockImplementation(() => ({
+      send: mockLegacySend,
       queryStatus: mockLegacyQueryStatus,
+      queryDteStatus: mockLegacyQueryDteStatus,
     })),
   };
 });
@@ -124,6 +127,19 @@ describe('Fiscal Services with Mock Transport', () => {
     mockLegacyQueryStatus.mockReset().mockResolvedValue({
       trackId: 'mock-track-123',
       status: 'SOK',
+      rawResponse: '<xml>mock</xml>',
+    });
+    mockLegacySend.mockReset().mockResolvedValue({
+      trackId: 'mock-legacy-track-333',
+      status: 'EPR',
+      rawResponse: '<xml>mock</xml>',
+    });
+    mockLegacyQueryDteStatus.mockReset().mockResolvedValue({
+      tipoDTE: TipoDTE.FacturaElectronica,
+      folio: 100,
+      rutEmisor: '11111111-1',
+      status: 'DOK',
+      glosa: 'Documento recibido',
       rawResponse: '<xml>mock</xml>',
     });
 
@@ -230,7 +246,10 @@ describe('Fiscal Services with Mock Transport', () => {
         'mocktoken123',
         mockCert.rutFirmante,
       );
-      const signedEnvelope = String(mockBoletaSend.mock.calls[0][0]);
+      const boletaSendCalls = mockBoletaSend.mock.calls as Array<
+        [string, ...unknown[]]
+      >;
+      const signedEnvelope = String(boletaSendCalls[0]?.[0] ?? '');
       expect(signedEnvelope).toContain('<SetDTE ID="SetDoc">');
       expect(signedEnvelope).toContain('<Caratula version="1.0">');
       expect(signedEnvelope).toContain('<IndServicio>3</IndServicio>');
@@ -240,18 +259,18 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(signedEnvelope).toContain('<FRMT algoritmo="SHA1withRSA">');
       expect(signedEnvelope).toContain('<TmstFirma>');
       const tstedMatch = signedEnvelope.match(/<TSTED>([^<]+)<\/TSTED>/);
-      const tmstFirmaMatch = signedEnvelope.match(/<TmstFirma>([^<]+)<\/TmstFirma>/);
-      const ddMatch = signedEnvelope.match(/<DD>[\s\S]*?<\/DD>/);
-      const frmtMatch = signedEnvelope.match(
-        /<FRMT\b[^>]*>([\s\S]*?)<\/FRMT>/,
+      const tmstFirmaMatch = signedEnvelope.match(
+        /<TmstFirma>([^<]+)<\/TmstFirma>/,
       );
+      const ddMatch = signedEnvelope.match(/<DD>[\s\S]*?<\/DD>/);
+      const frmtMatch = signedEnvelope.match(/<FRMT\b[^>]*>([\s\S]*?)<\/FRMT>/);
       expect(tstedMatch?.[1]).toBeTruthy();
       expect(tmstFirmaMatch?.[1]).toBeTruthy();
       expect(tstedMatch?.[1]).toBe(tmstFirmaMatch?.[1]);
       expect(ddMatch?.[0]).toBeTruthy();
       expect(frmtMatch?.[1]).toBeTruthy();
       expect(
-        verifyTedSignatureForDd(
+        verifyTedSignatureForDdForTest(
           ddMatch?.[0] ?? '',
           parseCaf(caf),
           frmtMatch?.[1]?.trim() ?? '',
@@ -437,6 +456,305 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(updated?.status).toBe('SOK');
     });
 
+    it('emits factura 33 through legacy EnvioDTE and stores public result', async () => {
+      await folioProvider.addCafXml(
+        context,
+        cafXml('11111111-1', 100, 110, TipoDTE.FacturaElectronica),
+      );
+
+      const result = await docService.emitirLegacyDte(
+        {
+          context: {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          document: {
+            idDoc: {
+              tipoDTE: TipoDTE.FacturaElectronica,
+              fechaEmision: '2026-05-25',
+              formaPago: 1,
+            },
+            emisor: {
+              rutEmisor: '11111111-1',
+              rznSoc: 'EMISOR TEST',
+              giroEmis: 'SERVICIOS',
+              acteco: 620200,
+              dirOrigen: 'DIR TEST',
+              cmnaOrigen: 'SANTIAGO',
+            },
+            receptor: {
+              rutRecep: '22222222-2',
+              rznSocRecep: 'RECEPTOR TEST',
+              giroRecep: 'COMERCIO',
+              dirRecep: 'DIR RECEP',
+              cmnaRecep: 'SANTIAGO',
+            },
+            detalles: [
+              {
+                nroLinDet: 1,
+                nmbItem: 'Servicio test',
+                qtyItem: 1,
+                prcItem: 1000,
+                montoItem: 1000,
+              },
+            ],
+            totales: {
+              mntNeto: 840,
+              tasaIVA: 19,
+              iva: 160,
+              mntTotal: 1000,
+            },
+          },
+        },
+        TipoDTE.FacturaElectronica,
+      );
+
+      expect(result.internalId).toBeDefined();
+      expect(result.folio).toBe(100);
+      expect(result.trackId).toBe('mock-legacy-track-333');
+      expect(mockLegacySend).toHaveBeenCalledWith(
+        expect.stringContaining('<EnvioDTE'),
+        expect.objectContaining({ rutEmisor: '11111111-1' }),
+        'mocktoken123',
+        mockCert.rutFirmante,
+      );
+      const legacySendCalls = mockLegacySend.mock.calls as Array<
+        [string, ...unknown[]]
+      >;
+      const signedEnvelope = String(legacySendCalls[0]?.[0] ?? '');
+      expect(signedEnvelope).toContain('<SetDTE ID="SetDoc">');
+      expect(signedEnvelope).toContain('<DTE version="1.0">');
+      expect(signedEnvelope).not.toContain('<DTE xmlns=');
+      expect(signedEnvelope).toContain('<TipoDTE>33</TipoDTE>');
+      expect(signedEnvelope).toContain('<FRMT algoritmo="SHA1withRSA">');
+      expect(signedEnvelope).toContain('<FRMA algoritmo="SHA1withRSA">');
+      expect(JSON.stringify(result)).not.toContain('rawResponse');
+    });
+
+    it('reports factura 33 readiness without leaking fiscal secrets', async () => {
+      const missing = await docService.getFactura33Readiness({
+        fechaResolucion: '2020-01-01',
+        nroResolucion: 80,
+      });
+
+      expect(missing.ready).toBe(false);
+      expect(missing.tipoDTE).toBe(TipoDTE.FacturaElectronica);
+      expect(missing.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'certificate', ok: true }),
+          expect.objectContaining({ name: 'siiAuth', ok: true }),
+          expect.objectContaining({ name: 'caf33', ok: false }),
+        ]),
+      );
+      expect(JSON.stringify(missing)).not.toMatch(
+        /rawResponse|rawXml|RSASK|PRIVATE KEY|token|password|pfx/i,
+      );
+
+      await folioProvider.addCafXml(
+        context,
+        cafXml('11111111-1', 300, 301, TipoDTE.FacturaElectronica),
+      );
+
+      const ready = await docService.getFactura33Readiness({
+        fechaResolucion: '2020-01-01',
+        nroResolucion: 80,
+      });
+
+      expect(ready.ready).toBe(true);
+      expect(ready.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'caf33', ok: true }),
+        ]),
+      );
+      expect(JSON.stringify(ready)).not.toMatch(
+        /rawResponse|rawXml|RSASK|PRIVATE KEY|token|password|pfx/i,
+      );
+    });
+
+    it('emits factura de compra 46 through legacy EnvioDTE', async () => {
+      await folioProvider.addCafXml(
+        context,
+        cafXml('11111111-1', 200, 210, TipoDTE.FacturaCompraElectronica),
+      );
+
+      const result = await docService.emitirLegacyDte(
+        {
+          context: {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          document: {
+            idDoc: {
+              tipoDTE: TipoDTE.FacturaCompraElectronica,
+              fechaEmision: '2026-05-25',
+              formaPago: 1,
+            },
+            emisor: {
+              rutEmisor: '11111111-1',
+              rznSoc: 'EMISOR TEST',
+              giroEmis: 'SERVICIOS',
+              acteco: 620200,
+              dirOrigen: 'DIR TEST',
+              cmnaOrigen: 'SANTIAGO',
+            },
+            receptor: {
+              rutRecep: '22222222-2',
+              rznSocRecep: 'PROVEEDOR TEST',
+              giroRecep: 'COMERCIO',
+              dirRecep: 'DIR PROVEEDOR',
+              cmnaRecep: 'SANTIAGO',
+            },
+            detalles: [
+              {
+                nroLinDet: 1,
+                nmbItem: 'Compra test',
+                qtyItem: 1,
+                prcItem: 1000,
+                montoItem: 1000,
+              },
+            ],
+            totales: {
+              mntNeto: 840,
+              tasaIVA: 19,
+              iva: 160,
+              mntTotal: 1000,
+            },
+          },
+        },
+        TipoDTE.FacturaCompraElectronica,
+      );
+
+      expect(result.folio).toBe(200);
+      const legacySendCalls = mockLegacySend.mock.calls as Array<
+        [string, ...unknown[]]
+      >;
+      const signedEnvelope = String(legacySendCalls.at(-1)?.[0] ?? '');
+      expect(signedEnvelope).toContain('<TipoDTE>46</TipoDTE>');
+      expect(JSON.stringify(result)).not.toContain('rawResponse');
+    });
+
+    it('emits guia de despacho 52 when traslado fields are present', async () => {
+      await folioProvider.addCafXml(
+        context,
+        cafXml('11111111-1', 300, 310, TipoDTE.GuiaDespachoElectronica),
+      );
+
+      const result = await docService.emitirLegacyDte(
+        {
+          context: {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          document: {
+            idDoc: {
+              tipoDTE: TipoDTE.GuiaDespachoElectronica,
+              fechaEmision: '2026-05-25',
+              tipoDespacho: 1,
+              indTraslado: 5,
+            },
+            emisor: {
+              rutEmisor: '11111111-1',
+              rznSoc: 'EMISOR TEST',
+              giroEmis: 'SERVICIOS',
+              acteco: 620200,
+              dirOrigen: 'DIR TEST',
+              cmnaOrigen: 'SANTIAGO',
+            },
+            receptor: {
+              rutRecep: '22222222-2',
+              rznSocRecep: 'RECEPTOR TEST',
+              giroRecep: 'COMERCIO',
+              dirRecep: 'DIR RECEP',
+              cmnaRecep: 'SANTIAGO',
+            },
+            detalles: [
+              {
+                nroLinDet: 1,
+                nmbItem: 'Traslado test',
+                qtyItem: 1,
+                prcItem: 0,
+                montoItem: 0,
+              },
+            ],
+            totales: {
+              mntTotal: 0,
+            },
+          },
+        },
+        TipoDTE.GuiaDespachoElectronica,
+      );
+
+      expect(result.folio).toBe(300);
+      const legacySendCalls = mockLegacySend.mock.calls as Array<
+        [string, ...unknown[]]
+      >;
+      const signedEnvelope = String(legacySendCalls.at(-1)?.[0] ?? '');
+      expect(signedEnvelope).toContain('<TipoDTE>52</TipoDTE>');
+      expect(signedEnvelope).toContain('<IndTraslado>5</IndTraslado>');
+      expect(JSON.stringify(result)).not.toContain('rawResponse');
+    });
+
+    it('rejects guia de despacho 52 without indTraslado', async () => {
+      await expect(
+        docService.emitirLegacyDte(
+          {
+            document: {
+              idDoc: {
+                tipoDTE: TipoDTE.GuiaDespachoElectronica,
+                fechaEmision: '2026-05-25',
+              },
+              emisor: { rutEmisor: '11111111-1' },
+              receptor: {
+                rutRecep: '22222222-2',
+                rznSocRecep: 'RECEPTOR TEST',
+              },
+              detalles: [
+                {
+                  nroLinDet: 1,
+                  nmbItem: 'Traslado',
+                  prcItem: 0,
+                  montoItem: 0,
+                },
+              ],
+              totales: { mntTotal: 0 },
+            },
+          } as any,
+          TipoDTE.GuiaDespachoElectronica,
+        ),
+      ).rejects.toThrow('requiere indTraslado');
+    });
+
+    it('rejects nota de credito 61 without mandatory reference', async () => {
+      await expect(
+        docService.emitirLegacyDte(
+          {
+            document: {
+              idDoc: {
+                tipoDTE: TipoDTE.NotaCredito,
+                fechaEmision: '2026-05-25',
+              },
+              emisor: { rutEmisor: '11111111-1' },
+              receptor: {
+                rutRecep: '22222222-2',
+                rznSocRecep: 'RECEPTOR TEST',
+              },
+              detalles: [
+                {
+                  nroLinDet: 1,
+                  nmbItem: 'Correccion',
+                  prcItem: 1000,
+                  montoItem: 1000,
+                },
+              ],
+              totales: { mntTotal: 1000 },
+            },
+          } as any,
+          TipoDTE.NotaCredito,
+        ),
+      ).rejects.toThrow('requieren al menos una referencia');
+      expect(mockLegacySend).not.toHaveBeenCalled();
+    });
+
     it('can create edge provision from valid parameters', async () => {
       const edgeDto = {
         context: {
@@ -515,7 +833,12 @@ describe('Fiscal Services with Mock Transport', () => {
   });
 });
 
-function cafXml(rutEmisor: string, start: number, end: number): string {
+function cafXml(
+  rutEmisor: string,
+  start: number,
+  end: number,
+  tipoDTE: TipoDTE = TipoDTE.BoletaElectronica,
+): string {
   const keys = forge.pki.rsa.generateKeyPair(512);
   const privateKeyAsn1 = forge.pki.privateKeyToAsn1(keys.privateKey);
   const privateKeyDer = forge.asn1.toDer(privateKeyAsn1).getBytes();
@@ -535,7 +858,7 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
     <DA>
       <RE>${rutEmisor}</RE>
       <RS>EMISOR TEST</RS>
-      <TD>39</TD>
+      <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
       <FA>2026-01-01</FA>
       <RSAPK>
@@ -553,4 +876,27 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
 
 function toEvenLengthHex(value: string): string {
   return value.length % 2 === 0 ? value : `0${value}`;
+}
+
+function verifyTedSignatureForDdForTest(
+  ddXml: string,
+  caf: ReturnType<typeof parseCaf>,
+  signatureBase64: string,
+): boolean {
+  const publicKey = forge.pki.setRsaPublicKey(
+    new forge.jsbn.BigInteger(
+      forge.util.bytesToHex(forge.util.decode64(caf.da.rsaPk.modulus)),
+      16,
+    ),
+    new forge.jsbn.BigInteger(
+      forge.util.bytesToHex(forge.util.decode64(caf.da.rsaPk.exponent)),
+      16,
+    ),
+  );
+  const md = forge.md.sha1.create();
+  md.update(ddXml, 'utf8');
+  return publicKey.verify(
+    md.digest().bytes(),
+    forge.util.decode64(signatureBase64),
+  );
 }

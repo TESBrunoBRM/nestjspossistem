@@ -10,6 +10,7 @@ import {
 } from 'sii-engine';
 import { FiscalContextResolver } from '../fiscal/fiscal-context.resolver';
 import { FISCAL_FOLIO_PROVIDER } from '../fiscal-documents/fiscal-documents.tokens';
+import { QueryFolioAvailabilityDto } from './dto/query-folio-availability.dto';
 import { ALLOWED_CAF_ACQUISITION_TIPO_DTE } from './dto/request-caf-acquisition.dto';
 import { RequestCafAcquisitionDto } from './dto/request-caf-acquisition.dto';
 import {
@@ -20,6 +21,10 @@ import {
   FISCAL_CAF_ACQUISITION_PROVIDER,
   FISCAL_CAF_ACQUISITION_REPOSITORY,
 } from './fiscal-caf-acquisition.tokens';
+import {
+  type FolioAvailabilityProvider,
+  toPublicFolioAvailabilityResult,
+} from './fiscal-folio-availability.types';
 
 @Injectable()
 export class FiscalCafAcquisitionService {
@@ -59,6 +64,17 @@ export class FiscalCafAcquisitionService {
     return toPublicCafAcquisitionResult(saved);
   }
 
+  async queryFolioAvailability(dto: QueryFolioAvailabilityDto) {
+    const context = await this.contextResolver.resolve(dto.context);
+    const result = await this.availabilityProvider().queryAvailableFolios({
+      context,
+      tipoDTE: dto.tipoDTE,
+      method: 'sii_portal_availability_scraping',
+    });
+
+    return toPublicFolioAvailabilityResult(result);
+  }
+
   private async importDownloadedCaf(
     result: CafAcquisitionResult,
   ): Promise<CafAcquisitionResult> {
@@ -82,6 +98,18 @@ export class FiscalCafAcquisitionService {
       tipoDTE: request.tipoDTE,
       idempotencyKey: request.idempotencyKey,
     };
+  }
+
+  private availabilityProvider(): FolioAvailabilityProvider {
+    const candidate = this
+      .acquisitionProvider as Partial<FolioAvailabilityProvider>;
+    if (typeof candidate.queryAvailableFolios !== 'function') {
+      throw new Error(
+        'El provider de CAF no soporta consulta de folios disponibles por scraping.',
+      );
+    }
+
+    return candidate as FolioAvailabilityProvider;
   }
 }
 

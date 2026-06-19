@@ -17,6 +17,7 @@ import {
   FISCAL_CAF_ACQUISITION_PROVIDER,
   FISCAL_CAF_ACQUISITION_REPOSITORY,
 } from './fiscal-caf-acquisition.tokens';
+import type { FolioAvailabilityProvider } from './fiscal-folio-availability.types';
 
 const context: IssuerContext = {
   environment: SiiEnvironment.Certificacion,
@@ -35,6 +36,9 @@ describe('FiscalCafAcquisitionService', () => {
   let service: FiscalCafAcquisitionService;
   let acquisitionProvider: jest.Mocked<CafAcquisitionProvider>;
   let requestCafMock: jest.MockedFunction<CafAcquisitionProvider['requestCaf']>;
+  let queryAvailableFoliosMock: jest.MockedFunction<
+    FolioAvailabilityProvider['queryAvailableFolios']
+  >;
   let folioProvider: { addCafXml: jest.Mock };
 
   beforeEach(async () => {
@@ -54,9 +58,26 @@ describe('FiscalCafAcquisitionService', () => {
           rawResponse: 'cookie=session; token=secret',
         }),
       );
+    queryAvailableFoliosMock = jest.fn().mockImplementation((request) =>
+      Promise.resolve({
+        requestId: 'folio-availability-1',
+        status: 'available',
+        method: 'sii_portal_availability_scraping',
+        context: request.context,
+        tipoDTE: request.tipoDTE,
+        quantityProbed: 1,
+        availableFolios: 10,
+        maxAuthorizedFolios: 20,
+        requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+        completedAt: new Date('2026-05-26T12:01:00.000Z'),
+        retryable: false,
+      }),
+    );
     acquisitionProvider = {
       requestCaf: requestCafMock,
-    };
+      queryAvailableFolios: queryAvailableFoliosMock,
+    } as jest.Mocked<CafAcquisitionProvider> &
+      jest.Mocked<FolioAvailabilityProvider>;
     folioProvider = { addCafXml: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -166,6 +187,67 @@ describe('FiscalCafAcquisitionService', () => {
     });
     expectPublicPayloadSafe(result);
   });
+
+  it('imports downloaded CAF 33 internally for factura electronica requests', async () => {
+    const rawCaf = cafXml('76123456-0', 700, 705, TipoDTE.FacturaElectronica);
+    const caf = parseCaf(rawCaf);
+    requestCafMock.mockResolvedValueOnce({
+      requestId: 'caf-request-33',
+      status: 'downloaded',
+      method: 'sii_portal_automation',
+      context,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantityRequested: 1,
+      requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+      completedAt: new Date('2026-05-26T12:01:00.000Z'),
+      caf,
+    });
+
+    const result = await service.requestCaf({
+      context: contextDto,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantity: 1,
+    });
+
+    expect(folioProvider.addCafXml).toHaveBeenCalledWith(context, rawCaf);
+    expect(result).toMatchObject({
+      requestId: 'caf-request-33',
+      status: 'imported',
+      tipoDTE: TipoDTE.FacturaElectronica,
+      caf: {
+        rutEmisor: '76123456-0',
+        tipoDTE: TipoDTE.FacturaElectronica,
+        rangeStart: 700,
+        rangeEnd: 705,
+      },
+    });
+    expectPublicPayloadSafe(result);
+  });
+
+  it('returns public SII availability for CAF 33 folios', async () => {
+    const result = await service.queryFolioAvailability({
+      context: contextDto,
+      tipoDTE: TipoDTE.FacturaElectronica,
+    });
+
+    expect(queryAvailableFoliosMock).toHaveBeenCalledWith({
+      context,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      method: 'sii_portal_availability_scraping',
+    });
+    expect(result).toMatchObject({
+      requestId: 'folio-availability-1',
+      status: 'available',
+      method: 'sii_portal_availability_scraping',
+      rutEmisor: '76123456-0',
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantityProbed: 1,
+      availableFolios: 10,
+      maxAuthorizedFolios: 20,
+      retryable: false,
+    });
+    expectPublicPayloadSafe(result);
+  });
 });
 
 function expectPublicPayloadSafe(body: unknown): void {
@@ -176,14 +258,19 @@ function expectPublicPayloadSafe(body: unknown): void {
   );
 }
 
-function cafXml(rutEmisor: string, start: number, end: number): string {
+function cafXml(
+  rutEmisor: string,
+  start: number,
+  end: number,
+  tipoDTE = TipoDTE.BoletaElectronica,
+): string {
   return `<?xml version="1.0" encoding="ISO-8859-1"?>
 <AUTORIZACION>
   <CAF version="1.0">
     <DA>
       <RE>${rutEmisor}</RE>
       <RS>EMISOR TEST</RS>
-      <TD>39</TD>
+      <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
       <FA>2026-01-01</FA>
       <RSAPK><M>00</M><E>03</E></RSAPK>

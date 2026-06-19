@@ -2,6 +2,7 @@ import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ApiKeyGuard } from '../auth/api-key.guard';
+import { QueryFolioAvailabilityDto } from './dto/query-folio-availability.dto';
 import { RequestCafAcquisitionDto } from './dto/request-caf-acquisition.dto';
 import { FiscalCafAcquisitionService } from './fiscal-caf-acquisition.service';
 
@@ -22,5 +23,15 @@ export class FiscalCafAcquisitionController {
   })
   requestCaf(@Body() dto: RequestCafAcquisitionDto) {
     return this.cafAcquisitionService.requestCaf(dto);
+  }
+
+  @Post('availability')
+  @Throttle({ default: { limit: 1, ttl: 30000 } })
+  @ApiOperation({
+    summary:
+      'Consulta folios CAF disponibles en portal SII sin descargar ni consumir CAF',
+  })
+  queryFolioAvailability(@Body() dto: QueryFolioAvailabilityDto) {
+    return this.cafAcquisitionService.queryFolioAvailability(dto);
   }
 }

@@ -3,7 +3,9 @@
 Esta carpeta usa dos tipos de pruebas:
 
 - `test/fiscal-ministack-custody.smoke-spec.ts`: valida custodia real sobre MiniStack (`S3 + SSM + DynamoDB`) sin depender del SII.
-- `test/fiscal-real-sii.smoke-spec.ts`: valida flujo real en certificacion SII usando custodia en MiniStack.
+- `test/fiscal-real-sii.smoke-spec.ts`: valida flujo real de boleta 39 en certificacion SII usando custodia en MiniStack.
+- `test/fiscal-real-sii-caf33.smoke-spec.ts`: valida solo scraping real de CAF 33 desde portal SII e importacion a custody.
+- `test/fiscal-real-sii-factura33.smoke-spec.ts`: valida obtencion/importacion de CAF 33 y emision real de factura 33.
 
 ## Hito actual
 
@@ -54,10 +56,10 @@ Copiar:
 .env.real-sii-tests.example
 ```
 
-a:
+o usar directamente:
 
 ```text
-.env.real-sii-tests
+.env
 ```
 
 y completar al menos:
@@ -72,9 +74,7 @@ y completar al menos:
 
 `REAL_SII_TEST_FECHA_RESOLUCION` y `REAL_SII_TEST_NRO_RESOLUCION` deben corresponder a la resolucion DTE real del emisor en certificacion SII. El smoke real no usa defaults de ejemplo para esos campos. `REAL_SII_TEST_NRO_RESOLUCION` debe ser un entero mayor o igual a `0`, porque algunos emisores autorizados por SII efectivamente usan `0`.
 
-La custodia local usa ademas `.env.ministack`.
-
-Si ya tienes un setup previo en `.env` con `SII_RUT_EMISOR`, `SII_RUT_FIRMANTE`, `SII_FECHA_RESOLUCION`, `SII_NRO_RESOLUCION`, `SII_PFX_PATH` o `SII_PFX_PASSWORD`, el loader de smoke los hereda como fallback antes de limpiar el bootstrap local de la app.
+La custodia local usa ademas `.env.ministack`. El loader de smoke real lee `.env.ministack`, luego `.env.real-sii-tests.example` si existe, y finalmente `.env` para sobreescribir con la configuracion activa local.
 
 ## Secuencia recomendada
 
@@ -83,7 +83,15 @@ pnpm run ministack:start
 pnpm run ministack:bootstrap
 pnpm run test:ministack-custody
 pnpm run test:real-sii
+pnpm run test:real-sii:caf33
+pnpm run test:real-sii:factura33
 ```
+
+`test:real-sii:caf33` es el camino mas corto para probar que nosotros estamos obteniendo el CAF 33 por scraping: registra el emisor, consulta `POST /api/fiscal/folios/availability` con `tipoDTE=33` y llama `POST /api/fiscal/folios/requests` para exigir que el resultado quede `imported`. `Disponible 0 / Maximo Autorizado 0` se conserva como diagnostico, pero no bloquea la solicitud porque el portal puede mostrar esos contadores y aun permitir descargar CAF.
+
+Para diagnosticar folios antes de pedir/descargar CAF, usar `POST /api/fiscal/folios/availability` con `tipoDTE=33`. Ese endpoint scrapea la pantalla de timbraje del SII y devuelve `availableFolios` y `maxAuthorizedFolios` sin presionar `Obtener`, por lo que no genera ni consume CAF.
+
+El smoke de factura 33 valida recepcion del upload mediante `STATUS=0` y `TRACKID`, y luego consulta los servicios oficiales `QueryEstUp` y `QueryEstDte`. Un upload recibido puede terminar con DTE rechazados si los datos tributarios del emisor no coinciden con el registro de certificacion.
 
 Para reutilizar un CAF ya cargado y evitar scraping o solicitudes nuevas al SII durante desarrollo:
 
@@ -97,9 +105,10 @@ Tambien puedes usar el script listo para eso:
 
 ```powershell
 pnpm run test:real-sii:existing-caf
+pnpm run test:real-sii:factura33:existing-caf
 ```
 
-Ese comando es la regresion manual mas corta para el hito actual de boleta real, porque evita pedir CAF nuevo cuando ya existe uno activo en el entorno de pruebas.
+Esos comandos son la regresion manual mas corta para boleta 39 y factura 33 cuando ya existe un CAF activo en el entorno de pruebas.
 
 ## Notas
 
@@ -107,4 +116,4 @@ Ese comando es la regresion manual mas corta para el hito actual de boleta real,
 - Si ya existe un CAF activo en MiniStack para el tenant de prueba, la prueba real intenta reutilizarlo antes de pedir uno nuevo al SII.
 - Si `REAL_SII_TEST_SKIP_CAF_REQUEST=true`, el smoke no solicita CAF nuevo y falla explicitamente si no encuentra uno activo.
 - El preflight del smoke real falla de forma explicita si falta el archivo PFX, si falta la password del PFX, si la password no corresponde al archivo entregado, o si la resolucion DTE no esta configurada o es invalida.
-- No subir `secure/real-sii-tests` ni `.env.real-sii-tests` al repositorio.
+- No subir `secure/real-sii-tests` al repositorio.
