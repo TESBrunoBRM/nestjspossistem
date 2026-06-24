@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsIn,
@@ -188,13 +188,26 @@ class LegacyDteReferenciaDto {
   nroLinRef: number;
 
   @IsOptional()
+  @Transform(({ value }) =>
+    value === undefined || value === null || value === '' ? value : String(value),
+  )
   @IsString()
   tipoDTERef?: string;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
+  @IsIn([1])
+  indGlobal?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
   folioRef?: number;
+
+  @IsOptional()
+  @IsString()
+  rutOtro?: string;
 
   @IsOptional()
   @IsString()

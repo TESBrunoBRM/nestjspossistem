@@ -88,6 +88,26 @@ export class FiscalDocumentsController {
     return this.fiscalDocumentService.getFactura33Readiness(query);
   }
 
+  @Get('documents/notas-de-debito/readiness')
+  @Throttle({ default: { limit: 1, ttl: 10000 } })
+  @ApiOperation({
+    summary:
+      'Verifica si nota de debito DTE 56 esta lista para emision real',
+  })
+  getNotaDebitoReadiness(@Query() query: IssuerContextDto) {
+    return this.fiscalDocumentService.getLegacyDteReadiness(query, 56);
+  }
+
+  @Get('documents/notas-de-credito/readiness')
+  @Throttle({ default: { limit: 1, ttl: 10000 } })
+  @ApiOperation({
+    summary:
+      'Verifica si nota de credito DTE 61 esta lista para emision real',
+  })
+  getNotaCreditoReadiness(@Query() query: IssuerContextDto) {
+    return this.fiscalDocumentService.getLegacyDteReadiness(query, 61);
+  }
+
   @Get('documents/:id/status')
   @Throttle({ default: { limit: 1, ttl: 5000 } })
   @ApiOperation({

@@ -11,15 +11,17 @@ Este proyecto reemplaza la integracion antigua con SimpleAPI. No debe existir di
 - `sii-engine` vive dentro de este mismo repositorio y `pnpm workspace` lo conecta mediante `"sii-engine": "workspace:*"`.
 - La emision real de boleta electronica `tipoDTE=39` ya fue validada en certificacion SII con `trackId` y consulta de estado operativa, usando certificado y `CAF` persistidos por emisor.
 - El flujo real de factura electronica `tipoDTE=33` ya obtiene CAF mediante scraping, importa folios en custody, genera/firma el DTE, realiza el upload legacy y consulta `QueryEstUp`/`QueryEstDte`.
+- Los flujos host para notas de credito/debito `tipoDTE=61/56` ya comparten el canal legacy validado, exigen referencias tributarias completas y cubren anulacion, correccion de texto y correccion de montos con pruebas unitarias/e2e.
 - La custodia de certificados, password y `CAF` ya tiene una primera capa AWS-compatible por emisor. Lo que sigue pendiente para produccion es endurecer la persistencia de documentos, tracking, RVD y auditoria con storage transaccional, cifrado y auditable.
 
-## Hito de avance al 2026-06-19
+## Hito de avance al 2026-06-24
 
 - `test/fiscal-real-sii.smoke-spec.ts` ya cubre token real, custodia por emisor, `CAF`, emision real y consulta de estado.
 - `pnpm run test:real-sii:existing-caf` queda como regresion manual corta para la vertical boleta.
 - `test/fiscal-real-sii-caf33.smoke-spec.ts` verifica scraping e importacion real de CAF 33.
 - `test/fiscal-real-sii-factura33.smoke-spec.ts` verifica token, CAF 33, emision, upload con `TRACKID`, consulta de envio, consulta DTE y muestra impresa.
-- El foco siguiente pasa a ser datos tributarios reales por emisor, persistencia durable del lifecycle fiscal, RVD, evidencia de certificacion e integracion con `business_app_back`.
+- `src/fiscal-documents/fiscal-document.service.spec.ts` y `test/fiscal.e2e-spec.ts` cubren factura 33, readiness por CAF, nota de credito 61 y nota de debito 56 con referencias obligatorias, sin exponer payloads sensibles.
+- El foco siguiente pasa a ser datos tributarios reales por emisor, persistencia durable del lifecycle fiscal, RVD, evidencia de certificacion para 56/61 e integracion con `business_app_back`.
 
 ## Responsabilidad de este proyecto
 
@@ -448,6 +450,81 @@ corepack pnpm run test:real-sii:factura33:existing-caf
 
 El smoke completo fue verificado con sus cinco fases en verde. Obtener `STATUS=0` y `TRACKID` confirma que el SII recibio el upload. No implica por si solo que el DTE haya sido aceptado tributariamente: `QueryEstUp` puede informar documentos rechazados si razon social, giro, actividad, direccion, sucursal, resolucion u otros datos del emisor no coinciden con el ambiente SII.
 
+### Emitir notas de credito y debito
+
+```http
+GET /api/fiscal/documents/notas-de-credito/readiness
+GET /api/fiscal/documents/notas-de-debito/readiness
+POST /api/fiscal/documents/notas-de-credito
+POST /api/fiscal/documents/notas-de-debito
+```
+
+Los endpoints usan el mismo canal legacy `EnvioDTE` de factura 33. Antes de emitir, validar que exista CAF activo para el tipo correspondiente:
+
+- `tipoDTE=61` para nota de credito.
+- `tipoDTE=56` para nota de debito.
+
+Cada nota debe incluir al menos una referencia completa al DTE origen:
+
+```json
+{
+  "context": {
+    "fechaResolucion": "2020-01-01",
+    "nroResolucion": 0
+  },
+  "document": {
+    "idDoc": {
+      "tipoDTE": 61,
+      "fechaEmision": "2026-06-24"
+    },
+    "emisor": {
+      "rznSoc": "EMPRESA DEMO SPA",
+      "giroEmis": "SERVICIOS INFORMATICOS",
+      "acteco": 620200,
+      "dirOrigen": "SANTIAGO",
+      "cmnaOrigen": "SANTIAGO"
+    },
+    "receptor": {
+      "rutRecep": "60803000-K",
+      "rznSocRecep": "SERVICIO DE IMPUESTOS INTERNOS"
+    },
+    "detalles": [
+      {
+        "nroLinDet": 1,
+        "nmbItem": "Anulacion factura origen",
+        "qtyItem": 1,
+        "prcItem": 1000,
+        "montoItem": 1000
+      }
+    ],
+    "referencias": [
+      {
+        "nroLinRef": 1,
+        "tipoDTERef": 33,
+        "folioRef": 1234,
+        "fechaRef": "2026-06-23",
+        "codRef": 1,
+        "razonRef": "Anulacion total de factura origen"
+      }
+    ],
+    "totales": {
+      "mntNeto": 1000,
+      "tasaIVA": 19,
+      "iva": 190,
+      "mntTotal": 1190
+    }
+  }
+}
+```
+
+`codRef` soportado:
+
+- `1`: anula documento.
+- `2`: corrige texto.
+- `3`: corrige montos.
+
+La respuesta publica sigue el mismo contrato de factura 33: `internalId`, `folio`, `trackId`, `status` y sin `CAF`, `RSASK`, PFX, password, token, cookies, XML firmado ni `rawResponse`.
+
 ### Emitir boleta electronica
 
 ```http
@@ -814,5 +891,6 @@ El transporte y la autenticacion funcionaron, pero el procesamiento tributario r
 - Validacion XSD real, golden fixtures y evidencia formal de certificacion.
 - Endpoint host-to-host en `business_app_back` para onboarding y sincronizacion de emisores contra `business-app-sii`.
 - Completar certificacion funcional de factura 33 con los datos tributarios oficiales de cada emisor.
-- Completar nota de credito 61 y los demas DTE fuera de boleta/factura.
+- Ejecutar certificacion real de notas 56/61 con CAF autorizados y DTE origen real emitido por el mismo emisor.
+- Completar el resto de DTE fuera de boleta/factura/notas: 34, 46, 52 y siguientes.
 - Workers de polling con locks, backoff y rate limits.

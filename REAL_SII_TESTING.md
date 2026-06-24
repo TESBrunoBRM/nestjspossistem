@@ -11,7 +11,7 @@ Esta carpeta usa dos tipos de pruebas:
 
 ## Hito actual
 
-Al 2026-06-01, el smoke real ya permite validar este recorrido base sobre certificacion SII:
+Al 2026-06-24, el smoke real ya permite validar este recorrido base sobre certificacion SII:
 
 - custodia por emisor en `business-app-sii`
 - token real SII
@@ -19,8 +19,10 @@ Al 2026-06-01, el smoke real ya permite validar este recorrido base sobre certif
 - emision real de boleta `39`
 - obtencion de `trackId`
 - consulta de estado por `trackId`
+- obtencion/importacion de CAF 33 por scraping
+- emision real de factura `33`, consulta `QueryEstUp`, consulta `QueryEstDte` y muestra impresa
 
-Este hito confirma que el vertical boleta ya es operativo para certificacion. Lo que sigue ya no es "hacer que llegue al SII", sino endurecer persistencia, RVD, evidencia formal, XSD y automatizacion del programa completo.
+Este hito confirma que los verticales boleta 39 y factura 33 ya son operativos para certificacion. La fase 4 de notas 56/61 queda cerrada en contrato host y pruebas unitarias/e2e mockeadas; para evidencia formal SII todavia se debe ejecutar una corrida real con CAF 56/61 y un DTE origen real del mismo emisor.
 
 ## Assets locales
 
@@ -88,6 +90,15 @@ pnpm run test:real-sii:factura33
 Para diagnosticar folios antes de pedir/descargar CAF, usar `POST /api/fiscal/folios/availability` con `tipoDTE=33`. Ese endpoint scrapea la pantalla de timbraje del SII y devuelve `availableFolios` y `maxAuthorizedFolios` sin presionar `Obtener`, por lo que no genera ni consume CAF.
 
 El smoke de factura 33 valida recepcion del upload mediante `STATUS=0` y `TRACKID`, y luego consulta los servicios oficiales `QueryEstUp` y `QueryEstDte`. Un upload recibido puede terminar con DTE rechazados si los datos tributarios del emisor no coinciden con el registro de certificacion.
+
+Las notas de credito/debito usan el mismo canal legacy que factura 33:
+
+```http
+POST /api/fiscal/documents/notas-de-credito
+POST /api/fiscal/documents/notas-de-debito
+```
+
+Antes de probarlas contra SII real, preparar CAF activo para `tipoDTE=61` o `tipoDTE=56` y emitir o identificar el DTE origen. Las referencias deben incluir `tipoDTERef`, `folioRef` o `indGlobal`, `fechaRef`, `codRef` y `razonRef`.
 
 Para reutilizar un CAF ya cargado y evitar scraping o solicitudes nuevas al SII durante desarrollo:
 

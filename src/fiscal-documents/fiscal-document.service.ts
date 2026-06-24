@@ -351,6 +351,12 @@ export class FiscalDocumentService {
   }
 
   async getFactura33Readiness(dto: IssuerContextDto) {
+    return this.getLegacyDteReadiness(dto, TipoDTE.FacturaElectronica);
+  }
+
+  async getLegacyDteReadiness(dto: IssuerContextDto, tipoDTE: number) {
+    this.assertSupportedLegacyTipoDTE(tipoDTE);
+
     const context = await this.contextResolver.resolve(dto);
     const checks: Array<{
       name: string;
@@ -393,10 +399,7 @@ export class FiscalDocumentService {
       });
     }
 
-    const cafStatuses = await this.folios.getStatus(
-      context,
-      TipoDTE.FacturaElectronica,
-    );
+    const cafStatuses = await this.folios.getStatus(context, tipoDTE);
     const publicCafs = cafStatuses.map((status) => toPublicCafStatus(status));
     const hasUsableCaf = publicCafs.some((status) => {
       const remaining = Number(status.remaining ?? 0);
@@ -406,25 +409,28 @@ export class FiscalDocumentService {
         ['active', 'expiring_soon'].includes(String(status.status))
       );
     });
+    const cafCheckName = `caf${tipoDTE}`;
     checks.push({
-      name: 'caf33',
+      name: cafCheckName,
       ok: hasUsableCaf,
       detail: hasUsableCaf
         ? undefined
-        : 'No hay CAF 33 activo con folios disponibles para este emisor.',
+        : `No hay CAF ${tipoDTE} activo con folios disponibles para este emisor.`,
     });
 
     const ready = certificateAvailable && tokenAvailable && hasUsableCaf;
+    const documentName = legacyDteDisplayName(tipoDTE);
     return sanitizePublicPayload({
       ready,
-      tipoDTE: TipoDTE.FacturaElectronica,
+      tipoDTE,
+      documentName,
       rutEmisor: context.rutEmisor,
       environment: context.environment,
       checks,
       cafs: publicCafs,
       nextAction: ready
-        ? 'Factura 33 lista para emision.'
-        : 'Importar/obtener CAF 33 autorizado por SII antes de emitir factura.',
+        ? `${documentName} listo para emision.`
+        : `Importar/obtener CAF ${tipoDTE} autorizado por SII antes de emitir ${documentName}.`,
     });
   }
 
@@ -592,6 +598,10 @@ export class FiscalDocumentService {
       );
     }
 
+    this.assertSupportedLegacyTipoDTE(tipoDTE);
+  }
+
+  private assertSupportedLegacyTipoDTE(tipoDTE: number): void {
     const supported = [
       TipoDTE.FacturaElectronica,
       TipoDTE.FacturaNoAfectaExentaElectronica,
@@ -599,8 +609,14 @@ export class FiscalDocumentService {
       TipoDTE.GuiaDespachoElectronica,
       TipoDTE.NotaDebito,
       TipoDTE.NotaCredito,
-    ].includes(tipoDTE);
-    if (!supported) {
+    ].map(Number);
+    if (isBoletaTipoDTE(tipoDTE)) {
+      throw new BadRequestException(
+        'Las boletas deben emitirse por el endpoint dedicado /documents/boletas.',
+      );
+    }
+    const supportedTipo = supported.includes(tipoDTE);
+    if (!supportedTipo) {
       throw new BadRequestException(
         `DTE ${tipoDTE} aun no esta soportado por sii-engine en este host.`,
       );
@@ -634,6 +650,11 @@ export class FiscalDocumentService {
     }
 
     for (const referencia of document.referencias) {
+      if (!String(referencia.tipoDTERef ?? '').trim()) {
+        throw new BadRequestException(
+          'Cada referencia de nota debe incluir tipoDTERef.',
+        );
+      }
       if (!referencia.codRef || ![1, 2, 3].includes(referencia.codRef)) {
         throw new BadRequestException(
           'Cada referencia de nota debe incluir codRef 1, 2 o 3.',
@@ -647,6 +668,11 @@ export class FiscalDocumentService {
       if (!referencia.indGlobal && !referencia.folioRef) {
         throw new BadRequestException(
           'Cada referencia no global debe incluir folioRef.',
+        );
+      }
+      if (!referencia.fechaRef?.trim()) {
+        throw new BadRequestException(
+          'Cada referencia de nota debe incluir fechaRef.',
         );
       }
     }
@@ -680,6 +706,19 @@ const siiUploadResponseParser = new XMLParser({
   attributeNamePrefix: '@_',
   trimValues: true,
 });
+
+function legacyDteDisplayName(tipoDTE: number): string {
+  const names: Record<number, string> = {
+    [TipoDTE.FacturaElectronica]: 'Factura electronica 33',
+    [TipoDTE.FacturaNoAfectaExentaElectronica]: 'Factura exenta 34',
+    [TipoDTE.FacturaCompraElectronica]: 'Factura de compra 46',
+    [TipoDTE.GuiaDespachoElectronica]: 'Guia de despacho 52',
+    [TipoDTE.NotaDebito]: 'Nota de debito 56',
+    [TipoDTE.NotaCredito]: 'Nota de credito 61',
+  };
+
+  return names[tipoDTE] ?? `DTE ${tipoDTE}`;
+}
 
 function parseSiiUploadReceptionError(error: unknown): SendResult | undefined {
   const rawResponse = getRawSiiResponse(error);
