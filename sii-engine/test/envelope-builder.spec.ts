@@ -39,4 +39,30 @@ describe("envelope-builder", () => {
     expect(xml).toContain("<DTE>Factura 2</DTE>");
     expect(xml).toContain("<DTE>Nota 1</DTE>");
   });
+
+  it("preserves explicit DTE namespaces when embedding signed documents", () => {
+    const dtes: DteFirmado[] = [
+      {
+        document: { idDoc: { tipoDTE: TipoDTE.FacturaElectronica } } as any,
+        signedXml:
+          '<?xml version="1.0" encoding="ISO-8859-1"?>\n<DTE xmlns="http://www.sii.cl/SiiDte" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0"><Documento ID="F1T33"/></DTE>',
+        tedXml: "",
+      },
+    ];
+
+    const caratula: EnvioDTECaratula = {
+      rutEmisor: "76212345-6",
+      rutEnvia: "12345678-9",
+      fechaResolucion: "2014-08-22",
+      nroResolucion: 80,
+      fechaFirmaEnvio: "2026-05-17T20:00:00",
+    };
+
+    const xml = buildEnvioDteXml(dtes, caratula);
+
+    expect(xml).not.toContain("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<DTE");
+    expect(xml).toContain(
+      '<DTE xmlns="http://www.sii.cl/SiiDte" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0">',
+    );
+  });
 });

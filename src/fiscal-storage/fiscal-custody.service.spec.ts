@@ -91,7 +91,7 @@ describe('FiscalCustodyService', () => {
 
     await service.saveCaf({
       context,
-      caf: cafMaterial('76123456-0', 100, 102),
+      caf: cafMaterial('76123456-0', 100, 102, todayIsoDate()),
     });
 
     const first = await service.getNextFolio(
@@ -123,7 +123,12 @@ function mockConfigService(values: Record<string, unknown>): ConfigService {
   } as unknown as ConfigService;
 }
 
-function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
+function cafMaterial(
+  rutEmisor: string,
+  rangeStart: number,
+  rangeEnd: number,
+  fechaAutorizacion = '2026-01-01',
+) {
   const rawXml = `<?xml version="1.0" encoding="ISO-8859-1"?>
 <AUTORIZACION>
   <CAF version="1.0">
@@ -132,7 +137,7 @@ function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
       <RS>EMISOR TEST</RS>
       <TD>39</TD>
       <RNG><D>${rangeStart}</D><H>${rangeEnd}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${fechaAutorizacion}</FA>
       <RSAPK><M>00</M><E>03</E></RSAPK>
       <IDK>1</IDK>
     </DA>
@@ -149,7 +154,7 @@ function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
       tipoDTE: TipoDTE.BoletaElectronica,
       rangeStart,
       rangeEnd,
-      fechaAutorizacion: '2026-01-01',
+      fechaAutorizacion,
       rsaPk: {
         modulus: '00',
         exponent: '03',
@@ -161,4 +166,12 @@ function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
     rsask: 'private-key',
     rawXml,
   };
+}
+
+function todayIsoDate(): string {
+  const today = new Date();
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(
+    today.getDate(),
+  )}`;
 }

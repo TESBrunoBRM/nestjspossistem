@@ -29,12 +29,7 @@ function buildSubTotDTE(dtes: DteFirmado[]): string {
 
 function toEmbeddedDteXml(signedXml: string): string {
   const dteStart = signedXml.indexOf("<DTE");
-  const embedded = dteStart === -1 ? signedXml : signedXml.substring(dteStart);
-
-  return embedded.replace(
-    /^<DTE\s+xmlns="http:\/\/www\.sii\.cl\/SiiDte"(?:\s+xmlns:xsi="http:\/\/www\.w3\.org\/2001\/XMLSchema-instance")?(\s+version="1\.0")>/,
-    "<DTE$1>"
-  );
+  return dteStart === -1 ? signedXml : signedXml.substring(dteStart);
 }
 
 function buildCaratulaEnvioDte(caratula: EnvioDTECaratula, dtes: DteFirmado[]): string {

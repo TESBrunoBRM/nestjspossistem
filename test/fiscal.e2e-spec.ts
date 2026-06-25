@@ -253,7 +253,13 @@ describe('FiscalController (e2e)', () => {
       .set('x-api-key', 'test-api-key')
       .send({
         context: folioContext(),
-        cafXml: cafXml('76123456-0', 300, 305),
+        cafXml: cafXml(
+          '76123456-0',
+          300,
+          305,
+          TipoDTE.BoletaElectronica,
+          todayIsoDate(),
+        ),
       })
       .expect(201);
 
@@ -875,6 +881,7 @@ function cafXml(
   start: number,
   end: number,
   tipoDTE = TipoDTE.BoletaElectronica,
+  fechaAutorizacion = '2026-01-01',
 ): string {
   const keys = forge.pki.rsa.generateKeyPair(512);
   const privateKeyAsn1 = forge.pki.privateKeyToAsn1(keys.privateKey);
@@ -897,7 +904,7 @@ function cafXml(
       <RS>EMISOR TEST</RS>
       <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${fechaAutorizacion}</FA>
       <RSAPK>
         <M>${rsapkModulus}</M>
         <E>${rsapkExponent}</E>
@@ -909,6 +916,14 @@ function cafXml(
   <RSASK>${rsask}</RSASK>
   <RSAPUBK>${rsapubk}</RSAPUBK>
 </AUTORIZACION>`;
+}
+
+function todayIsoDate(): string {
+  const today = new Date();
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(
+    today.getDate(),
+  )}`;
 }
 
 function toEvenLengthHex(value: string): string {

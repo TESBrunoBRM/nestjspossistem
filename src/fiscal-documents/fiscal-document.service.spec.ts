@@ -523,8 +523,9 @@ describe('Fiscal Services with Mock Transport', () => {
       >;
       const signedEnvelope = String(legacySendCalls[0]?.[0] ?? '');
       expect(signedEnvelope).toContain('<SetDTE ID="SetDoc">');
-      expect(signedEnvelope).toContain('<DTE version="1.0">');
-      expect(signedEnvelope).not.toContain('<DTE xmlns=');
+      expect(signedEnvelope).toContain(
+        '<DTE xmlns="http://www.sii.cl/SiiDte" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0">',
+      );
       expect(signedEnvelope).toContain('<TipoDTE>33</TipoDTE>');
       expect(signedEnvelope).toContain('<FRMT algoritmo="SHA1withRSA">');
       expect(signedEnvelope).toContain('<FRMA algoritmo="SHA1withRSA">');
