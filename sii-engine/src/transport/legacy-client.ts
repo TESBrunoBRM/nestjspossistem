@@ -69,12 +69,31 @@ export async function sendDte(
     });
     responseData = res.data as string;
   } catch (err) {
+    const rawResponse = getAxiosErrorResponseData(err);
     throw new SiiSendError("SEND_FAILED", "Error de red al enviar el DTE al SII", {
       cause: err as Error,
+      rawResponse,
+      detail: rawResponse ? "El SII devolvio una respuesta HTTP de error durante el upload" : undefined,
     });
   }
 
   return parseSendResponse(responseData);
+}
+
+function getAxiosErrorResponseData(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+
+  const response = (err as { response?: { data?: unknown } }).response;
+  const data = response?.data;
+  if (typeof data === "string") return data;
+  if (Buffer.isBuffer(data)) return data.toString("latin1");
+  if (data == null) return undefined;
+
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
 }
 
 function buildLegacyUploadMultipart(

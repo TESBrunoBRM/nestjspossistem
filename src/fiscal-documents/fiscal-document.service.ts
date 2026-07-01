@@ -1019,7 +1019,10 @@ function verifyTedSignatureForDd(
       ),
     );
     const md = forge.md.sha1.create();
-    md.update(normalizeDdXmlForTedVerification(ddXml), 'utf8');
+    md.update(
+      encodeSiiXmlBinaryForTed(normalizeDdXmlForTedVerification(ddXml)),
+      'raw',
+    );
     return publicKey.verify(
       md.digest().bytes(),
       forge.util.decode64(signatureBase64),
@@ -1033,7 +1036,16 @@ function normalizeDdXmlForTedVerification(ddXml: string): string {
   return ddXml
     .trim()
     .replace(/^<DD\b[^>]*>/, '<DD>')
-    .replace(/\s+xmlns(?::[A-Za-z0-9_-]+)?="[^"]*"/g, '');
+      .replace(/\s+xmlns(?::[A-Za-z0-9_-]+)?="[^"]*"/g, '');
+}
+
+function encodeSiiXmlBinaryForTed(value: string): string {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0xff) {
+      throw new Error('DD del TED contiene caracteres fuera de ISO-8859-1.');
+    }
+  }
+  return Buffer.from(value, 'latin1').toString('binary');
 }
 
 function extractXmlBlock(xml: string, tagName: string): string | undefined {

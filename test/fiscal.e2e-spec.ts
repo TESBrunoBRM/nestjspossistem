@@ -411,6 +411,77 @@ describe('FiscalController (e2e)', () => {
     expectPublicPayloadSafe(response.body);
   });
 
+  it.each([
+    [
+      '/api/fiscal/documents/facturas-exentas/readiness',
+      TipoDTE.FacturaNoAfectaExentaElectronica,
+      'Factura exenta 34',
+      'caf34',
+      1000,
+    ],
+    [
+      '/api/fiscal/documents/facturas-compra/readiness',
+      TipoDTE.FacturaCompraElectronica,
+      'Factura de compra 46',
+      'caf46',
+      1100,
+    ],
+    [
+      '/api/fiscal/documents/guias-despacho/readiness',
+      TipoDTE.GuiaDespachoElectronica,
+      'Guia de despacho 52',
+      'caf52',
+      1200,
+    ],
+  ] as Array<[string, TipoDTE, string, string, number]>)(
+    'GET %s reports phase 5 DTE readiness safely',
+    async (path, tipoDTE, documentName, cafCheckName, folioStart) => {
+      const missing = await request(app.getHttpServer())
+        .get(path)
+        .set('x-api-key', 'test-api-key')
+        .query(folioContext())
+        .expect(200);
+
+      expect(missing.body.success).toBe(true);
+      expect(missing.body.data).toMatchObject({
+        ready: false,
+        tipoDTE,
+        documentName,
+        rutEmisor: '76123456-0',
+      });
+      expect(missing.body.data.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: cafCheckName, ok: false }),
+        ]),
+      );
+      expectPublicPayloadSafe(missing.body);
+
+      await request(app.getHttpServer())
+        .post('/api/fiscal/folios/cafs')
+        .set('x-api-key', 'test-api-key')
+        .send({
+          context: folioContext(),
+          cafXml: cafXml('76123456-0', folioStart, folioStart + 5, tipoDTE),
+        })
+        .expect(201);
+
+      const ready = await request(app.getHttpServer())
+        .get(path)
+        .set('x-api-key', 'test-api-key')
+        .query(folioContext())
+        .expect(200);
+
+      expect(ready.body.success).toBe(true);
+      expect(ready.body.data.ready).toBe(true);
+      expect(ready.body.data.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: cafCheckName, ok: true }),
+        ]),
+      );
+      expectPublicPayloadSafe(ready.body);
+    },
+  );
+
   it('POST /api/fiscal/documents/facturas emits factura 33 and supports DTE status', async () => {
     await request(app.getHttpServer())
       .post('/api/fiscal/folios/cafs')
@@ -576,6 +647,85 @@ describe('FiscalController (e2e)', () => {
     expectPublicPayloadSafe(response.body);
   });
 
+  it('POST /api/fiscal/documents/facturas-exentas emits DTE 34 without IVA', async () => {
+    const document = legacyDocumentPayload(
+      TipoDTE.FacturaNoAfectaExentaElectronica,
+      {
+        mntExento: 1000,
+        mntTotal: 1000,
+      },
+    );
+    (document.detalles[0] as Record<string, unknown>).indExe = 1;
+
+    const response = await request(app.getHttpServer())
+      .post('/api/fiscal/documents/facturas-exentas')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        document,
+      })
+      .expect(201);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data).toMatchObject({
+      trackId: 'e2e-legacy-track-333',
+      status: 'EPR',
+    });
+    expect(response.body.data.folio).toBeGreaterThan(0);
+    expectPublicPayloadSafe(response.body);
+  });
+
+  it('POST /api/fiscal/documents/facturas-compra emits DTE 46', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/fiscal/documents/facturas-compra')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        document: legacyDocumentPayload(TipoDTE.FacturaCompraElectronica, {
+          mntNeto: 1000,
+          tasaIVA: 19,
+          iva: 190,
+          mntTotal: 1190,
+        }),
+      })
+      .expect(201);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data).toMatchObject({
+      trackId: 'e2e-legacy-track-333',
+      status: 'EPR',
+    });
+    expect(response.body.data.folio).toBeGreaterThan(0);
+    expectPublicPayloadSafe(response.body);
+  });
+
+  it('POST /api/fiscal/documents/guias-despacho emits DTE 52 with traslado fields', async () => {
+    const document = legacyDocumentPayload(TipoDTE.GuiaDespachoElectronica, {
+      mntTotal: 0,
+    });
+    (document.idDoc as Record<string, unknown>).tipoDespacho = 1;
+    (document.idDoc as Record<string, unknown>).indTraslado = 5;
+    document.detalles[0].prcItem = 0;
+    document.detalles[0].montoItem = 0;
+
+    const response = await request(app.getHttpServer())
+      .post('/api/fiscal/documents/guias-despacho')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        document,
+      })
+      .expect(201);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data).toMatchObject({
+      trackId: 'e2e-legacy-track-333',
+      status: 'EPR',
+    });
+    expect(response.body.data.folio).toBeGreaterThan(0);
+    expectPublicPayloadSafe(response.body);
+  });
+
   it('POST /api/fiscal/folios/reserve reserves a specific folio', async () => {
     await request(app.getHttpServer())
       .post('/api/fiscal/folios/cafs')
@@ -630,6 +780,34 @@ describe('FiscalController (e2e)', () => {
       retryable: false,
     });
     expect(response.body.data.requestId).toBeDefined();
+    expectPublicPayloadSafe(response.body);
+  });
+
+  it.each([
+    TipoDTE.FacturaNoAfectaExentaElectronica,
+    TipoDTE.FacturaCompraElectronica,
+    TipoDTE.GuiaDespachoElectronica,
+  ])('POST /api/fiscal/folios/requests accepts phase 5 CAF type %s', async (tipoDTE) => {
+    const response = await request(app.getHttpServer())
+      .post('/api/fiscal/folios/requests')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        tipoDTE,
+        quantity: 1,
+        idempotencyKey: `e2e-caf-request-${tipoDTE}`,
+      })
+      .expect(201);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data).toMatchObject({
+      status: 'manual_action_required',
+      method: 'sii_portal_automation',
+      rutEmisor: '76123456-0',
+      tipoDTE,
+      quantityRequested: 1,
+      retryable: false,
+    });
     expectPublicPayloadSafe(response.body);
   });
 

@@ -87,6 +87,25 @@ describe("legacy DTE upload", () => {
     });
   });
 
+  it("keeps the SII HTTP error body when the upload endpoint rejects the request", async () => {
+    const htmlResponse = `<html><body>RESULTADO DEL UPLOAD<br>HA OCURRIDO UN ERROR</body></html>`;
+    postMock.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 500,
+        data: htmlResponse,
+      },
+    });
+
+    await expect(sendDte("<EnvioDTE/>", options)).rejects.toMatchObject<
+      Partial<SiiSendError>
+    >({
+      code: "SEND_FAILED",
+      rawResponse: htmlResponse,
+      detail: "El SII devolvio una respuesta HTTP de error durante el upload",
+    });
+  });
+
   it("queries send status through the official QueryEstUp SOAP service", async () => {
     postMock.mockResolvedValue({
       data: soapResponse(

@@ -62,6 +62,20 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
   const skipCafRequest = parseBooleanEnv(
     optionalEnv('REAL_SII_TEST_SKIP_CAF_REQUEST'),
   );
+  const forcedFactura33Folio = parseOptionalPositiveInt(
+    optionalEnv('REAL_SII_TEST_FACTURA33_FOLIO'),
+    'REAL_SII_TEST_FACTURA33_FOLIO',
+  );
+  const sendStatusPollAttempts =
+    parseOptionalPositiveInt(
+      optionalEnv('REAL_SII_TEST_FACTURA33_STATUS_POLL_ATTEMPTS'),
+      'REAL_SII_TEST_FACTURA33_STATUS_POLL_ATTEMPTS',
+    ) ?? 6;
+  const sendStatusPollDelayMs =
+    parseOptionalPositiveInt(
+      optionalEnv('REAL_SII_TEST_FACTURA33_STATUS_POLL_DELAY_MS'),
+      'REAL_SII_TEST_FACTURA33_STATUS_POLL_DELAY_MS',
+    ) ?? 10_000;
   const environment = parseEnvironment(
     optionalEnv('REAL_SII_TEST_ENVIRONMENT') || 'CERTIFICACION',
   );
@@ -215,6 +229,13 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
     });
 
     const today = new Date().toISOString().slice(0, 10);
+    const activeCafRazonSocial = await resolveActiveCafRazonSocial({
+      app,
+      apiKey,
+      tenantId,
+      rutEmisor,
+      environment,
+    });
     const sendSpy = captureLegacyUploadAttempts();
     const response = await request(testServer(app))
       .post('/api/fiscal/documents/facturas')
@@ -230,6 +251,9 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
         document: {
           idDoc: {
             tipoDTE: TipoDTE.FacturaElectronica,
+            ...(forcedFactura33Folio
+              ? { folio: forcedFactura33Folio }
+              : {}),
             fechaEmision: today,
             formaPago: 1,
           },
@@ -237,6 +261,7 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
             rutEmisor,
             rznSoc:
               optionalEnv('REAL_SII_TEST_EMISOR_RAZON_SOCIAL') ||
+              activeCafRazonSocial ||
               resolveCafIssuerRazonSocial(existingCaf33Path) ||
               'PRUEBA CERTIFICACION SII',
             giroEmis:
@@ -335,20 +360,39 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
       blocker: factura33PreconditionBlocker,
     });
 
-    const response = await request(testServer(app))
-      .get(`/api/fiscal/documents/${emitted.internalId}/status`)
-      .set('x-api-key', apiKey)
-      .query({
-        tenantId,
-        rutEmisor,
-        environment,
-      })
-      .expect(200);
+    let statusData: SendStatusApiData | undefined;
+    let lastStatusBody: unknown;
+    for (let attempt = 1; attempt <= sendStatusPollAttempts; attempt += 1) {
+      if (attempt > 1) await delay(sendStatusPollDelayMs);
 
-    const statusData = responseData<SendStatusApiData>(response);
+      const response = await request(testServer(app))
+        .get(`/api/fiscal/documents/${emitted.internalId}/status`)
+        .set('x-api-key', apiKey)
+        .query({
+          tenantId,
+          rutEmisor,
+          environment,
+        })
+        .expect(200);
+
+      lastStatusBody = response.body;
+      statusData = responseData<SendStatusApiData>(response);
+      if (statusData.estadisticas) break;
+    }
+
+    expect(statusData).toBeDefined();
+    statusData = statusData!;
     expect(statusData.trackId).toBe(emitted.trackId);
     expect(statusData.normalizedStatus).toBeTruthy();
-    expect(JSON.stringify(response.body)).not.toMatch(secretLeakPattern());
+    expect(statusData.estadisticas).toEqual(
+      expect.objectContaining({
+        aceptados: expect.any(Number),
+        rechazados: 0,
+        reparos: 0,
+      }),
+    );
+    expect(statusData.estadisticas?.aceptados ?? 0).toBeGreaterThan(0);
+    expect(JSON.stringify(lastStatusBody)).not.toMatch(secretLeakPattern());
   });
 
   it('queries the factura 33 DTE status and printed sample without leaking secrets', async () => {
@@ -411,6 +455,11 @@ interface EmitFacturaApiData {
 interface SendStatusApiData {
   trackId: string;
   normalizedStatus: string;
+  estadisticas?: {
+    aceptados?: number;
+    rechazados?: number;
+    reparos?: number;
+  };
 }
 
 interface DteStatusApiData {
@@ -500,7 +549,10 @@ async function ensureUsableCafAvailable(input: {
   }
 
   if (input.existingCaf33Path) {
-    await importExistingCaf33(input);
+    await importExistingCaf33({
+      ...input,
+      existingCaf33Path: input.existingCaf33Path,
+    });
 
     const importedStatusResponse = await request(testServer(input.app))
       .get('/api/fiscal/folios/status')
@@ -633,6 +685,24 @@ function requireFactura33EmissionState(input: {
 function parseBooleanEnv(value?: string): boolean {
   if (!value) return false;
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function parseOptionalPositiveInt(
+  value: string | undefined,
+  envName: string,
+): number | undefined {
+  if (!value) return undefined;
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${envName} debe ser un entero positivo.`);
+  }
+
+  return parsed;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function resolveRealSiiTestPfxPath(): string {
@@ -858,4 +928,46 @@ function extractXmlBlock(xml: string, tagName: string): string | undefined {
 
 function secretLeakPattern(): RegExp {
   return /RSASK|rawXml|<CAF|PRIVATE KEY|token|password|pfx|PFX/i;
+}
+
+async function resolveActiveCafRazonSocial(input: {
+  app: INestApplication;
+  apiKey: string;
+  tenantId: string;
+  rutEmisor: string;
+  environment: SiiEnvironment;
+}): Promise<string | undefined> {
+  try {
+    const statusResponse = await request(testServer(input.app))
+      .get('/api/fiscal/folios/status')
+      .set('x-api-key', input.apiKey)
+      .query({
+        tenantId: input.tenantId,
+        rutEmisor: input.rutEmisor,
+        environment: input.environment,
+        tipoDTE: TipoDTE.FacturaElectronica,
+      })
+      .expect(200);
+
+    const statuses = responseData<unknown>(statusResponse);
+    if (!Array.isArray(statuses)) return undefined;
+
+    for (const entry of statuses) {
+      const item = entry as {
+        status?: string;
+        remaining?: number;
+        caf?: { razonSocial?: string };
+      };
+      if (
+        (item.status === 'active' || item.status === 'expiring_soon') &&
+        Number(item.remaining ?? 0) > 0 &&
+        item.caf?.razonSocial
+      ) {
+        return item.caf.razonSocial;
+      }
+    }
+  } catch {
+    // Non-critical: fall through to other resolution methods
+  }
+  return undefined;
 }

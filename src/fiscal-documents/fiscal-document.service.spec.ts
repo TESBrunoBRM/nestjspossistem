@@ -616,6 +616,61 @@ describe('Fiscal Services with Mock Transport', () => {
       );
     });
 
+    it.each([
+      [
+        TipoDTE.FacturaNoAfectaExentaElectronica,
+        'Factura exenta 34',
+        'caf34',
+      ],
+      [TipoDTE.FacturaCompraElectronica, 'Factura de compra 46', 'caf46'],
+      [TipoDTE.GuiaDespachoElectronica, 'Guia de despacho 52', 'caf52'],
+    ])(
+      'reports legacy DTE %s readiness with CAF-specific checks',
+      async (tipoDTE, documentName, cafCheckName) => {
+        const missing = await docService.getLegacyDteReadiness(
+          {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          tipoDTE,
+        );
+
+        expect(missing).toMatchObject({
+          ready: false,
+          tipoDTE,
+          documentName,
+        });
+        expect(missing.checks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: cafCheckName, ok: false }),
+          ]),
+        );
+
+        await folioProvider.addCafXml(
+          context,
+          cafXml('11111111-1', 700 + Number(tipoDTE), 705 + Number(tipoDTE), tipoDTE),
+        );
+
+        const ready = await docService.getLegacyDteReadiness(
+          {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          tipoDTE,
+        );
+
+        expect(ready.ready).toBe(true);
+        expect(ready.checks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: cafCheckName, ok: true }),
+          ]),
+        );
+        expect(JSON.stringify(ready)).not.toMatch(
+          /rawResponse|rawXml|RSASK|PRIVATE KEY|token|password|pfx/i,
+        );
+      },
+    );
+
     it('emits nota de credito 61 with mandatory reference data', async () => {
       await folioProvider.addCafXml(
         context,
@@ -852,6 +907,74 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(signedEnvelope).toContain('<TipoDTE>61</TipoDTE>');
       expect(signedEnvelope).toContain('<CodRef>2</CodRef>');
       expect(signedEnvelope).toContain('<MntTotal>0</MntTotal>');
+      expect(JSON.stringify(result)).not.toContain('rawResponse');
+    });
+
+    it('emits factura exenta 34 without IVA through legacy EnvioDTE', async () => {
+      await folioProvider.addCafXml(
+        context,
+        cafXml(
+          '11111111-1',
+          100,
+          110,
+          TipoDTE.FacturaNoAfectaExentaElectronica,
+        ),
+      );
+
+      const result = await docService.emitirLegacyDte(
+        {
+          context: {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          document: {
+            idDoc: {
+              tipoDTE: TipoDTE.FacturaNoAfectaExentaElectronica,
+              fechaEmision: '2026-05-25',
+              formaPago: 1,
+            },
+            emisor: {
+              rutEmisor: '11111111-1',
+              rznSoc: 'EMISOR TEST',
+              giroEmis: 'SERVICIOS',
+              acteco: 620200,
+              dirOrigen: 'DIR TEST',
+              cmnaOrigen: 'SANTIAGO',
+            },
+            receptor: {
+              rutRecep: '22222222-2',
+              rznSocRecep: 'RECEPTOR TEST',
+              giroRecep: 'COMERCIO',
+              dirRecep: 'DIR RECEPTOR',
+              cmnaRecep: 'SANTIAGO',
+            },
+            detalles: [
+              {
+                nroLinDet: 1,
+                nmbItem: 'Servicio exento test',
+                qtyItem: 1,
+                prcItem: 1000,
+                montoItem: 1000,
+                indExe: 1,
+              },
+            ],
+            totales: {
+              mntExento: 1000,
+              mntTotal: 1000,
+            },
+          },
+        },
+        TipoDTE.FacturaNoAfectaExentaElectronica,
+      );
+
+      expect(result.folio).toBe(100);
+      const legacySendCalls = mockLegacySend.mock.calls as Array<
+        [string, ...unknown[]]
+      >;
+      const signedEnvelope = String(legacySendCalls.at(-1)?.[0] ?? '');
+      expect(signedEnvelope).toContain('<TipoDTE>34</TipoDTE>');
+      expect(signedEnvelope).toContain('<MntExe>1000</MntExe>');
+      expect(signedEnvelope).not.toContain('<IVA>');
       expect(JSON.stringify(result)).not.toContain('rawResponse');
     });
 
@@ -1178,7 +1301,7 @@ function verifyTedSignatureForDdForTest(
     ),
   );
   const md = forge.md.sha1.create();
-  md.update(ddXml, 'utf8');
+  md.update(Buffer.from(ddXml, 'latin1').toString('binary'), 'raw');
   return publicKey.verify(
     md.digest().bytes(),
     forge.util.decode64(signatureBase64),

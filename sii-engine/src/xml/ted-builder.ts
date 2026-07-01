@@ -1,15 +1,21 @@
 import type { DteDocument } from "../types/dte.types.js";
-import type { CafMaterial } from "../types/caf.types.js";
+import type { CafData, CafMaterial } from "../types/caf.types.js";
 import { TipoDTE } from "../types/dte.types.js";
-import { extractCafXmlSection } from "../caf/caf-parser.js";
 
-function esc(value: unknown): string {
+function escText(value: unknown): string {
   if (value === undefined || value === null) return "";
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/\r/g, "&#xD;");
+}
+
+function escAttr(value: unknown): string {
+  return escText(value)
+    .replace(/"/g, "&quot;")
+    .replace(/\n/g, "&#xA;")
+    .replace(/\t/g, "&#x9;");
 }
 
 function formatIso8601Local(): string {
@@ -41,30 +47,38 @@ function getPrimerItem(doc: DteDocument): string {
 
 export function buildDdXml(
   doc: DteDocument,
-  caf: CafMaterial,
+  caf: CafData,
   timestamp?: string
 ): string {
-  const cafXmlSection = extractCafXmlSection(caf);
   const tsted = timestamp ?? formatIso8601Local();
 
-  return `<DD>
-<RE>${esc(doc.emisor.rutEmisor)}</RE>
+  return `<DD><RE>${escText(doc.emisor.rutEmisor)}</RE>
 <TD>${doc.idDoc.tipoDTE}</TD>
 <F>${doc.idDoc.folio}</F>
-<FE>${esc(doc.idDoc.fechaEmision)}</FE>
-<RR>${esc(getReceptorRut(doc))}</RR>
-<RSR>${esc(getReceptorRazonSocial(doc))}</RSR>
+<FE>${escText(doc.idDoc.fechaEmision)}</FE>
+<RR>${escText(getReceptorRut(doc))}</RR>
+<RSR>${escText(getReceptorRazonSocial(doc))}</RSR>
 <MNT>${doc.totales.mntTotal}</MNT>
-<IT1>${esc(getPrimerItem(doc))}</IT1>
-${cafXmlSection}
-<TSTED>${tsted}</TSTED>
-</DD>`;
+<IT1>${escText(getPrimerItem(doc))}</IT1>
+${buildCafXmlSection(caf)}
+<TSTED>${escText(tsted)}</TSTED></DD>`.replace(/\n/g, "");
+}
+
+export function buildCafXmlSection(caf: CafData): string {
+  const da = caf.da;
+
+  return `<CAF version="1.0"><DA><RE>${escText(da.rutEmisor)}</RE><RS>${escText(
+    da.razonSocial
+  )}</RS><TD>${da.tipoDTE}</TD><RNG><D>${da.rangeStart}</D><H>${da.rangeEnd}</H></RNG><FA>${escText(
+    da.fechaAutorizacion
+  )}</FA><RSAPK><M>${escText(da.rsaPk.modulus)}</M><E>${escText(
+    da.rsaPk.exponent
+  )}</E></RSAPK><IDK>${escText(da.idk)}</IDK></DA><FRMA algoritmo="${escAttr(
+    "SHA1withRSA"
+  )}">${escText(caf.frma)}</FRMA></CAF>`;
 }
 
 export function buildTedXml(doc: DteDocument, caf: CafMaterial, frma: string, timestamp?: string): string {
   const ddXml = buildDdXml(doc, caf, timestamp);
-  return `<TED version="1.0">
-${ddXml}
-<FRMT algoritmo="SHA1withRSA">${frma}</FRMT>
-</TED>`;
+  return `<TED version="1.0">${ddXml}<FRMT algoritmo="SHA1withRSA">${escText(frma)}</FRMT></TED>`;
 }

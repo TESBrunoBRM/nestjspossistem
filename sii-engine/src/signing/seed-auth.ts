@@ -47,13 +47,14 @@ async function getSeed(environment: SiiEnvironment): Promise<string> {
   } catch (err) {
     throw new SiiAuthError("AUTH_SEED_FAILED", "Error de red al obtener la semilla SII", {
       cause: err as Error,
+      rawResponse: getAxiosErrorResponseData(err),
     });
   }
 
   const parsed = xmlParser.parse(response);
   const semilla =
-    parsed?.["soapenv:Envelope"]?.["soapenv:Body"]?.["getSeedResponse"]?.["SemillaReturn"]?.["resp"]?.["SEMILLA"] ??
-    parsed?.["Envelope"]?.["Body"]?.["getSeedResponse"]?.["SemillaReturn"]?.["resp"]?.["SEMILLA"];
+    findTextByLocalName(parsed, "SEMILLA") ??
+    findTextInSoapReturn(parsed, ["getSeedReturn", "SemillaReturn"], "SEMILLA");
 
   if (!semilla) {
     throw new SiiAuthError("AUTH_SEED_FAILED", "No se pudo extraer la semilla de la respuesta SII", {
@@ -109,19 +110,20 @@ async function requestToken(
   } catch (err) {
     throw new SiiAuthError("AUTH_TOKEN_FAILED", "Error de red al obtener el token SII", {
       cause: err as Error,
+      rawResponse: getAxiosErrorResponseData(err),
     });
   }
 
   const parsed = xmlParser.parse(response);
   const token =
-    parsed?.["soapenv:Envelope"]?.["soapenv:Body"]?.["getTokenResponse"]?.["TokenReturn"]?.["resp"]?.["TOKEN"] ??
-    parsed?.["Envelope"]?.["Body"]?.["getTokenResponse"]?.["TokenReturn"]?.["resp"]?.["TOKEN"];
+    findTextByLocalName(parsed, "TOKEN") ??
+    findTextInSoapReturn(parsed, ["getTokenReturn", "TokenReturn"], "TOKEN");
 
   const estado =
-    parsed?.["soapenv:Envelope"]?.["soapenv:Body"]?.["getTokenResponse"]?.["TokenReturn"]?.["resp"]?.["STATUS"] ??
-    parsed?.["Envelope"]?.["Body"]?.["getTokenResponse"]?.["TokenReturn"]?.["resp"]?.["STATUS"];
+    findTextByLocalName(parsed, "STATUS") ??
+    findTextInSoapReturn(parsed, ["getTokenReturn", "TokenReturn"], "STATUS");
 
-  if (estado && String(estado) !== "00") {
+  if (estado && normalizeSiiStatusCode(estado) !== "00") {
     throw new SiiAuthError("AUTH_TOKEN_FAILED", `El SII rechazó la autenticación. Estado: ${estado}`, {
       rawResponse: response,
     });
@@ -134,6 +136,91 @@ async function requestToken(
   }
 
   return String(token);
+}
+
+function findTextInSoapReturn(
+  parsed: unknown,
+  returnNames: string[],
+  targetName: string
+): string | undefined {
+  for (const returnName of returnNames) {
+    const returnValue = findByLocalName(parsed, returnName);
+    const returnText = readText(returnValue);
+    if (!returnText?.trim().startsWith("<")) continue;
+
+    try {
+      const innerParsed = xmlParser.parse(returnText);
+      const target = findTextByLocalName(innerParsed, targetName);
+      if (target) return target;
+    } catch {
+      continue;
+    }
+  }
+
+  return undefined;
+}
+
+function findTextByLocalName(value: unknown, name: string): string | undefined {
+  return readText(findByLocalName(value, name));
+}
+
+function findByLocalName(value: unknown, name: string): unknown {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const match = findByLocalName(item, name);
+      if (match !== undefined) return match;
+    }
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object") return undefined;
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (localName(key) === name) return child;
+
+    const match = findByLocalName(child, name);
+    if (match !== undefined) return match;
+  }
+
+  return undefined;
+}
+
+function readText(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  if (typeof value !== "object") return undefined;
+
+  return readText((value as Record<string, unknown>)["#text"]);
+}
+
+function localName(name: string): string {
+  return name.includes(":") ? name.split(":").pop()! : name;
+}
+
+function normalizeSiiStatusCode(status: string): string {
+  return status.trim().padStart(2, "0");
+}
+
+function getAxiosErrorResponseData(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+
+  const response = (err as { response?: { data?: unknown } }).response;
+  const data = response?.data;
+  if (typeof data === "string") return data;
+  if (Buffer.isBuffer(data)) return data.toString("latin1");
+  if (data == null) return undefined;
+
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
 }
 
 export async function getAuthToken(

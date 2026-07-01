@@ -12,16 +12,19 @@ Este proyecto reemplaza la integracion antigua con SimpleAPI. No debe existir di
 - La emision real de boleta electronica `tipoDTE=39` ya fue validada en certificacion SII con `trackId` y consulta de estado operativa, usando certificado y `CAF` persistidos por emisor.
 - El flujo real de factura electronica `tipoDTE=33` ya obtiene CAF mediante scraping, importa folios en custody, genera/firma el DTE, realiza el upload legacy y consulta `QueryEstUp`/`QueryEstDte`.
 - Los flujos host para notas de credito/debito `tipoDTE=61/56` ya comparten el canal legacy validado, exigen referencias tributarias completas y cubren anulacion, correccion de texto y correccion de montos con pruebas unitarias/e2e.
+- Los flujos host para fase 5 `tipoDTE=34/46/52` ya tienen endpoints de readiness/emision, CAF acquisition habilitada, unit/e2e y smokes reales. En certificacion SII, DTE 34 quedo aceptado sin reparos; DTE 46, 56 y 61 quedaron bloqueados en solicitud CAF por `ST-SEG-DTE-21-2`; DTE 52 obtuvo CAF y corrigio el rechazo XSD por `PrcItem=0`, pero el ultimo upload termino en error de red sin respuesta cruda del SII.
 - La custodia de certificados, password y `CAF` ya tiene una primera capa AWS-compatible por emisor. Lo que sigue pendiente para produccion es endurecer la persistencia de documentos, tracking, RVD y auditoria con storage transaccional, cifrado y auditable.
 
-## Hito de avance al 2026-06-24
+## Hito de avance al 2026-07-01
 
 - `test/fiscal-real-sii.smoke-spec.ts` ya cubre token real, custodia por emisor, `CAF`, emision real y consulta de estado.
 - `pnpm run test:real-sii:existing-caf` queda como regresion manual corta para la vertical boleta.
 - `test/fiscal-real-sii-caf33.smoke-spec.ts` verifica scraping e importacion real de CAF 33.
 - `test/fiscal-real-sii-factura33.smoke-spec.ts` verifica token, CAF 33, emision, upload con `TRACKID`, consulta de envio, consulta DTE y muestra impresa.
-- `src/fiscal-documents/fiscal-document.service.spec.ts` y `test/fiscal.e2e-spec.ts` cubren factura 33, readiness por CAF, nota de credito 61 y nota de debito 56 con referencias obligatorias, sin exponer payloads sensibles.
-- El foco siguiente pasa a ser datos tributarios reales por emisor, persistencia durable del lifecycle fiscal, RVD, evidencia de certificacion para 56/61 e integracion con `business_app_back`.
+- `test/fiscal-real-sii-phase4.smoke-spec.ts` cubre notas 61/56 con referencia a factura 33 real aceptada; hoy queda bloqueado antes de emitir porque el portal SII no entrega CAF y responde `ST-SEG-DTE-21-2`.
+- `test/fiscal-real-sii-phase5.smoke-spec.ts` cubre factura exenta 34, factura de compra 46 y guia de despacho 52. DTE 34 fue aceptado sin reparos; DTE 46 quedo bloqueado por CAF `ST-SEG-DTE-21-2`; DTE 52 corrigio `PrcItem=0` y debe reintentarse cuando el upload SII no falle por red.
+- `src/fiscal-documents/fiscal-document.service.spec.ts` y `test/fiscal.e2e-spec.ts` cubren factura 33, readiness por CAF, notas 61/56 y fase 5 34/46/52, sin exponer payloads sensibles.
+- El foco siguiente pasa a ser persistencia durable del lifecycle fiscal, RVD, evidencia de certificacion para 46/52/56/61 cuando el portal permita CAF o existan CAF manuales frescos, e integracion con `business_app_back`.
 
 ## Responsabilidad de este proyecto
 
@@ -438,9 +441,26 @@ Comandos reales de certificacion:
 ```powershell
 ministack
 corepack pnpm run ministack:bootstrap
+$env:REAL_SII_TEST_FACTURA33_CAF_QUANTITY='1'
+$env:SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED='false'
 corepack pnpm run test:real-sii:caf33
 corepack pnpm run test:real-sii:factura33
+corepack pnpm run test:real-sii:phase4
+corepack pnpm run test:real-sii:phase5
 ```
+
+Para depuracion controlada se puede fijar el folio de factura 33 con
+`REAL_SII_TEST_FACTURA33_FOLIO`, pero no reutilices un folio ya enviado al SII:
+el reenvio puede terminar rechazado por duplicidad. El smoke espera hasta 6
+consultas de estado con 10 segundos entre intentos; se puede ajustar con
+`REAL_SII_TEST_FACTURA33_STATUS_POLL_ATTEMPTS` y
+`REAL_SII_TEST_FACTURA33_STATUS_POLL_DELAY_MS`.
+
+Para CAF 33, usar solicitudes unitarias. En certificacion el portal puede mostrar
+`Disponible 0 / Maximo Autorizado 0` y aun permitir un CAF de un folio; en cambio
+un bloque mayor puede terminar rechazado por la validacion final del portal.
+Si el scraping HTTP ya entrega diagnostico del portal, mantener el fallback
+Playwright apagado evita que una denegacion clara termine en timeout de Jest.
 
 Para reutilizar un CAF 33 existente:
 
@@ -448,7 +468,12 @@ Para reutilizar un CAF 33 existente:
 corepack pnpm run test:real-sii:factura33:existing-caf
 ```
 
-El smoke completo fue verificado con sus cinco fases en verde. Obtener `STATUS=0` y `TRACKID` confirma que el SII recibio el upload. No implica por si solo que el DTE haya sido aceptado tributariamente: `QueryEstUp` puede informar documentos rechazados si razon social, giro, actividad, direccion, sucursal, resolucion u otros datos del emisor no coinciden con el ambiente SII.
+Obtener `STATUS=0` y `TRACKID` confirma que el SII recibio el upload. No implica por si solo que el DTE haya sido aceptado tributariamente: `QueryEstUp` puede informar documentos rechazados si razon social, giro, actividad, direccion, sucursal, resolucion u otros datos del emisor no coinciden con el ambiente SII.
+Para considerar el envio limpio, `QueryEstUp` debe quedar con `ESTADO=EPR`,
+`ACEPTADOS > 0`, `RECHAZADOS=0` y `REPAROS=0`. `EPR` con `REPAROS > 0`
+significa que el envio fue procesado, pero el DTE requiere correccion.
+El caso real verificado para factura 33 fue el track `0252357548`, folio `10`,
+con `ACEPTADOS=1`, `RECHAZADOS=0` y `REPAROS=0`.
 
 ### Emitir notas de credito y debito
 
@@ -524,6 +549,51 @@ Cada nota debe incluir al menos una referencia completa al DTE origen:
 - `3`: corrige montos.
 
 La respuesta publica sigue el mismo contrato de factura 33: `internalId`, `folio`, `trackId`, `status` y sin `CAF`, `RSASK`, PFX, password, token, cookies, XML firmado ni `rawResponse`.
+
+Smoke real de fase 4:
+
+```powershell
+$env:REAL_SII_TEST_SKIP_CAF_REQUEST='false'
+$env:REAL_SII_TEST_LEGACY_CAF_QUANTITY='1'
+$env:SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED='false'
+corepack pnpm run test:real-sii:phase4
+```
+
+El smoke usa por defecto la factura 33 real aceptada como origen. Si se necesita
+otro documento origen, ajustar `REAL_SII_TEST_NOTE_REFERENCE_FOLIO`,
+`REAL_SII_TEST_NOTE_REFERENCE_FECHA` y `REAL_SII_TEST_NOTE_REFERENCE_TIPO_DTE`.
+
+### Emitir fase 5: factura exenta, factura de compra y guia de despacho
+
+```http
+GET /api/fiscal/documents/facturas-exentas/readiness
+GET /api/fiscal/documents/facturas-compra/readiness
+GET /api/fiscal/documents/guias-despacho/readiness
+POST /api/fiscal/documents/facturas-exentas
+POST /api/fiscal/documents/facturas-compra
+POST /api/fiscal/documents/guias-despacho
+```
+
+Tipos cubiertos:
+
+- `tipoDTE=34` para factura no afecta o exenta.
+- `tipoDTE=46` para factura de compra.
+- `tipoDTE=52` para guia de despacho.
+
+Smoke real de fase 5:
+
+```powershell
+$env:REAL_SII_TEST_SKIP_CAF_REQUEST='false'
+$env:REAL_SII_TEST_LEGACY_CAF_QUANTITY='1'
+$env:SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED='false'
+corepack pnpm run test:real-sii:phase5
+```
+
+Estado real al 2026-07-01:
+
+- DTE 34: CAF obtenido por scraping, upload recibido, `QueryEstUp` limpio y muestra impresa disponible.
+- DTE 46: el portal SII llega a la pantalla de folio inicial, pero al confirmar responde `ST-SEG-DTE-21-2`; no se debe insistir sin cambiar CAF/manual o esperar disponibilidad del portal.
+- DTE 52: CAF obtenido por scraping. Se corrigio el rechazo XSD de `PrcItem=0` omitiendo `PrcItem` cuando el valor es cero; el ultimo reintento genero XML correcto, pero fallo por red sin `rawResponse`.
 
 ### Emitir boleta electronica
 
@@ -884,13 +954,21 @@ Revisar los artefactos bajo `secure/real-sii-tests/artifacts/<folio>/` y compara
 
 El transporte y la autenticacion funcionaron, pero el procesamiento tributario rechazo uno o mas DTE. Consultar `QueryEstUp` y `QueryEstDte`, y revisar que los datos del emisor coincidan exactamente con el registro de certificacion SII. No reemplazar esos datos con valores demo en una validacion formal.
 
+### CAF real devuelve `ST-SEG-DTE-21-2`
+
+El scraping HTTP llego al portal autenticado, pero el SII no completo la generacion del CAF. El detalle publico queda en `secure/real-sii-tests/artifacts/<slug>/last-failed-caf-acquisition/response-body.json`. En los intentos del 2026-07-01 ocurrio para DTE 46, 56 y 61 despues de mostrar `Disponible 0 / Maximo Autorizado 0` y pedir folio inicial. Tratarlo como bloqueo del portal o del timbraje disponible; no repetir en bucle.
+
+### Guia 52 rechazada por `PrcItem=0`
+
+El SII puede rechazar `PrcItem` con `STATUS 7` porque su tipo XSD exige minimo `0.000001`. Para guias sin valorizacion, omitir `PrcItem` y conservar `MontoItem=0`. El builder de `sii-engine` ya aplica esa regla.
+
 ## Pendientes principales
 
 - Persistencia durable para documentos emitidos, RVD, trackId, polling y auditoria.
 - Automatizar RVD diario y conciliacion completa de boletas por dia.
 - Validacion XSD real, golden fixtures y evidencia formal de certificacion.
 - Endpoint host-to-host en `business_app_back` para onboarding y sincronizacion de emisores contra `business-app-sii`.
-- Completar certificacion funcional de factura 33 con los datos tributarios oficiales de cada emisor.
-- Ejecutar certificacion real de notas 56/61 con CAF autorizados y DTE origen real emitido por el mismo emisor.
-- Completar el resto de DTE fuera de boleta/factura/notas: 34, 46, 52 y siguientes.
+- Reintentar certificacion real de DTE 46, 56 y 61 cuando el portal permita generar CAF o se importe CAF manual fresco.
+- Reintentar upload real de DTE 52; el XML ya no serializa `PrcItem=0`, pero el ultimo intento fallo por red sin respuesta SII.
+- Completar DTE siguientes fuera de boleta/factura/notas/fase 5.
 - Workers de polling con locks, backoff y rate limits.

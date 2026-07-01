@@ -19,6 +19,11 @@ function opt(tag: string, value: unknown): string {
   return `<${tag}>${esc(value)}</${tag}>`;
 }
 
+function optNonZero(tag: string, value: unknown): string {
+  if (Number(value) === 0) return "";
+  return opt(tag, value);
+}
+
 function buildIdDoc(doc: DteDocument): string {
   const { idDoc } = doc;
   return `<IdDoc>
@@ -88,7 +93,7 @@ function buildTotales(doc: DteDocument): string {
   const { totales } = doc;
   return `<Totales>
 ${opt("MntNeto", totales.mntNeto)}
-${opt("MntExento", totales.mntExento)}
+${opt("MntExe", totales.mntExento)}
 ${opt("TasaIVA", totales.tasaIVA)}
 ${opt("IVA", totales.iva)}
 ${opt("IVANoRet", totales.ivaNoRet)}
@@ -111,7 +116,7 @@ ${opt("IndExe", detalle.indExe)}
 ${opt("DscItem", detalle.dscItem)}
 ${opt("QtyItem", detalle.qtyItem)}
 ${opt("UnmdItem", detalle.unmdItem)}
-<PrcItem>${detalle.prcItem}</PrcItem>
+${optNonZero("PrcItem", detalle.prcItem)}
 ${opt("DescuentoPct", detalle.descuentoPct)}
 ${opt("DescuentoMnt", detalle.descuentoMnt)}
 ${opt("RecargoPct", detalle.recargoPct)}

@@ -374,6 +374,76 @@ describe('SiiPortalFoliosAdapter', () => {
     );
   });
 
+  it('follows the intermediate generation form when the portal first asks for the initial folio', async () => {
+    const { adapter } = createAdapter(['token-1'], {
+      SII_PORTAL_CAF_AUTOMATION_ENABLED: 'true',
+      SII_PORTAL_CERT_LOGIN_ENABLED: 'false',
+      SII_PORTAL_HTTP_SCRAPING_ENABLED: 'true',
+      SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED: 'false',
+    });
+    const internals = adapterInternals(adapter);
+    jest.spyOn(internals, 'fetchCertificateLoginCookies').mockResolvedValue([]);
+    jest.spyOn(internals, 'portalHttpGet').mockResolvedValue('<html>ok</html>');
+    const postSpy = jest
+      .spyOn(internals, 'portalHttpPost')
+      .mockResolvedValueOnce('<html>rut ok</html>')
+      .mockResolvedValueOnce(`
+        <html>
+          <body>
+            <form action="/cvc_cgi/dte/of_confirma_folio" method="post">
+              <input type="hidden" name="COD_DOCTO" value="61">
+              <input type="hidden" name="CANT_DOCTOS" value="1">
+              <input type="hidden" name="FOLIO_INICIAL" value="">
+            </form>
+            Solicitud de Timbraje Electronico para NOTA DE CREDITO ELECTRONICA
+            Cantidad Solicitada 1 Disponible 0 Maximo Autorizado 0
+            Ingrese Folio Inicial
+            Timbraje Anterior: No registra timbraje anterior.
+          </body>
+        </html>
+      `)
+      .mockResolvedValueOnce(`
+        <html>
+          <body>
+            <form action="/cvc_cgi/dte/of_genera_folio" method="post">
+              <input type="hidden" name="COD_DOCTO" value="61">
+              <input type="hidden" name="CANT_DOCTOS" value="1">
+              <input type="hidden" name="FOLIO_INI" value="1">
+              <input type="hidden" name="FOLIO_FIN" value="1">
+            </form>
+            Solicitud de Timbraje Electronico para NOTA DE CREDITO ELECTRONICA
+            Cantidad Solicitada 1 Disponible 0 Maximo Autorizado 0
+            Folio Inicial 1 Folio Final 1
+          </body>
+        </html>
+      `)
+      .mockResolvedValueOnce(cafXml('76123456-0', 1, 1, TipoDTE.NotaCredito));
+
+    const result = await adapter.requestCaf(cafRequest(TipoDTE.NotaCredito));
+
+    expect(result).toMatchObject({
+      status: 'downloaded',
+      tipoDTE: TipoDTE.NotaCredito,
+    });
+    expect(postSpy).toHaveBeenCalledTimes(4);
+    expect(postSpy.mock.calls[2][0]).toContain(
+      '/cvc_cgi/dte/of_confirma_folio',
+    );
+    expect(postSpy.mock.calls[2][1]).toMatchObject({
+      ACEPTAR: 'Solicitar',
+      FOLIO_INICIAL: '1',
+      FOLIO_INI: '1',
+    });
+    expect(postSpy.mock.calls[3][0]).toContain(
+      '/cvc_cgi/dte/of_genera_folio',
+    );
+    expect(postSpy.mock.calls[3][1]).toMatchObject({
+      ACEPTAR: 'Obtener',
+      FOLIO_INI: '1',
+      FOLIO_FIN: '1',
+    });
+  });
+
   it('reuses readonly fields when they already contain the expected value', async () => {
     const { adapter } = createAdapter();
     const readonlyLocator = {

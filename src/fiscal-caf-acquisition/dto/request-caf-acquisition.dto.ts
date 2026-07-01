@@ -14,8 +14,11 @@ import { IssuerContextDto } from '../../fiscal/dto/issuer-context.dto';
 
 export const ALLOWED_CAF_ACQUISITION_TIPO_DTE = [
   TipoDTE.FacturaElectronica,
+  TipoDTE.FacturaNoAfectaExentaElectronica,
   TipoDTE.BoletaElectronica,
   TipoDTE.BoletaNoAfectaExentaElectronica,
+  TipoDTE.FacturaCompraElectronica,
+  TipoDTE.GuiaDespachoElectronica,
   TipoDTE.NotaDebito,
   TipoDTE.NotaCredito,
 ] as const;

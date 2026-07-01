@@ -54,17 +54,17 @@ export function parseCaf(cafXml: string): CafMaterial {
   }
 
   const cafDa: CafDa = {
-    rutEmisor: String(da["RE"] ?? ""),
-    razonSocial: String(da["RS"] ?? ""),
+    rutEmisor: readElementText(da["RE"]),
+    razonSocial: readElementText(da["RS"]),
     tipoDTE: tipoDTERaw as TipoDTE,
     rangeStart: Number(rng["D"] ?? 0),
     rangeEnd: Number(rng["H"] ?? 0),
-    fechaAutorizacion: String(da["FA"] ?? ""),
+    fechaAutorizacion: readElementText(da["FA"]),
     rsaPk: {
-      modulus: String(rsapk["M"] ?? ""),
-      exponent: String(rsapk["E"] ?? ""),
+      modulus: readElementText(rsapk["M"]),
+      exponent: readElementText(rsapk["E"]),
     },
-    idk: String(da["IDK"] ?? ""),
+    idk: readElementText(da["IDK"]),
   };
 
   if (cafDa.rangeStart <= 0 || cafDa.rangeEnd <= 0 || cafDa.rangeStart > cafDa.rangeEnd) {
@@ -74,10 +74,13 @@ export function parseCaf(cafXml: string): CafMaterial {
     );
   }
 
-  const frma = String(caf["FRMA"] ?? "");
-  const rsask = String(autorizacion["RSASK"] ?? "");
-  const rsapubk = String(autorizacion["RSAPUBK"] ?? "");
+  const frma = readElementText(caf["FRMA"]);
+  const rsask = readElementText(autorizacion["RSASK"]);
+  const rsapubk = readElementText(autorizacion["RSAPUBK"]);
 
+  if (!frma) {
+    throw new SiiCafError("CAF_PARSE_ERROR", "El CAF no contiene la firma FRMA");
+  }
   if (!rsask) {
     throw new SiiCafError("CAF_PARSE_ERROR", "El CAF no contiene la clave privada RSASK");
   }
@@ -89,6 +92,21 @@ export function parseCaf(cafXml: string): CafMaterial {
     rsapubk,
     rawXml: cafXml,
   };
+}
+
+function readElementText(value: unknown): string {
+  if (value == null) return "";
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  if (typeof value !== "object") return "";
+
+  const record = value as Record<string, unknown>;
+  return readElementText(record["#text"]);
 }
 
 export function extractCafXmlSection(cafData: CafMaterial): string {

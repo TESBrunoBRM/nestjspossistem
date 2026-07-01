@@ -88,6 +88,36 @@ export class FiscalDocumentsController {
     return this.fiscalDocumentService.getFactura33Readiness(query);
   }
 
+  @Get('documents/facturas-exentas/readiness')
+  @Throttle({ default: { limit: 1, ttl: 10000 } })
+  @ApiOperation({
+    summary:
+      'Verifica si factura exenta DTE 34 esta lista para emision real',
+  })
+  getFacturaExentaReadiness(@Query() query: IssuerContextDto) {
+    return this.fiscalDocumentService.getLegacyDteReadiness(query, 34);
+  }
+
+  @Get('documents/facturas-compra/readiness')
+  @Throttle({ default: { limit: 1, ttl: 10000 } })
+  @ApiOperation({
+    summary:
+      'Verifica si factura de compra DTE 46 esta lista para emision real',
+  })
+  getFacturaCompraReadiness(@Query() query: IssuerContextDto) {
+    return this.fiscalDocumentService.getLegacyDteReadiness(query, 46);
+  }
+
+  @Get('documents/guias-despacho/readiness')
+  @Throttle({ default: { limit: 1, ttl: 10000 } })
+  @ApiOperation({
+    summary:
+      'Verifica si guia de despacho DTE 52 esta lista para emision real',
+  })
+  getGuiaDespachoReadiness(@Query() query: IssuerContextDto) {
+    return this.fiscalDocumentService.getLegacyDteReadiness(query, 52);
+  }
+
   @Get('documents/notas-de-debito/readiness')
   @Throttle({ default: { limit: 1, ttl: 10000 } })
   @ApiOperation({

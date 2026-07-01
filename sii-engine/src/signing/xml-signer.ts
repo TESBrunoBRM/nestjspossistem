@@ -3,10 +3,11 @@ import { SignedXml } from "xml-crypto";
 import type { CertificateMaterial } from "../types/signing.types.js";
 import type { CafMaterial } from "../types/caf.types.js";
 import type { DteDocument } from "../types/dte.types.js";
-import { SiiSignError } from "../errors/sii-errors.js";
+import { SiiSignError, SiiValidationError } from "../errors/sii-errors.js";
 import { buildDdXml } from "../xml/ted-builder.js";
 import { getCertificateBase64, getRsaModulusAndExponent, loadCafPrivateKey } from "./certificate.js";
 import { buildDocumentId } from "../xml/dte-builder.js";
+import { encodeSiiXmlBinary } from "../utils/sii-encoding.js";
 
 export function signTed(
   doc: DteDocument,
@@ -26,10 +27,13 @@ export function signTed(
 
   try {
     const md = forge.md.sha1.create();
-    md.update(ddXml, "utf8");
+    md.update(encodeSiiXmlBinary(ddXml, "DD del TED"), "raw");
     const signature = cafPrivateKey.sign(md);
     return forge.util.encode64(signature);
   } catch (err) {
+    if (err instanceof SiiValidationError) {
+      throw err;
+    }
     throw new SiiSignError("Error al firmar el TED con la clave del CAF", {
       cause: err as Error,
     });

@@ -49,6 +49,7 @@ export interface PublicPollingResult {
   normalizedStatus: string;
   nextPollAfter: number;
   detail?: string;
+  estadisticas?: StatusQueryResult["estadisticas"];
   rawResponse?: string;
 }
 
@@ -71,6 +72,7 @@ export async function pollOnce(
     normalizedStatus: parseSendStatus(result.status),
     nextPollAfter: getNextPollAfter(attempt),
     detail: result.detail,
+    estadisticas: result.estadisticas,
     rawResponse: result.rawResponse,
   };
 }
@@ -107,6 +109,7 @@ export function toPublicPollingResult(result: PublicPollingResult): Record<strin
     normalizedStatus: result.normalizedStatus,
     nextPollAfter: result.nextPollAfter,
     detail: result.detail,
+    estadisticas: result.estadisticas,
   });
 }
 

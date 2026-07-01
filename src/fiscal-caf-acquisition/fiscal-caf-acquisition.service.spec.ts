@@ -224,6 +224,46 @@ describe('FiscalCafAcquisitionService', () => {
     expectPublicPayloadSafe(result);
   });
 
+  it.each([
+    TipoDTE.FacturaNoAfectaExentaElectronica,
+    TipoDTE.FacturaCompraElectronica,
+    TipoDTE.GuiaDespachoElectronica,
+    TipoDTE.NotaDebito,
+    TipoDTE.NotaCredito,
+  ])('allows CAF acquisition for legacy DTE %s', async (tipoDTE) => {
+    const rawCaf = cafXml('76123456-0', 800 + Number(tipoDTE), 805 + Number(tipoDTE), tipoDTE);
+    const caf = parseCaf(rawCaf);
+    requestCafMock.mockResolvedValueOnce({
+      requestId: `caf-request-${tipoDTE}`,
+      status: 'downloaded',
+      method: 'sii_portal_automation',
+      context,
+      tipoDTE,
+      quantityRequested: 1,
+      requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+      completedAt: new Date('2026-05-26T12:01:00.000Z'),
+      caf,
+    });
+
+    const result = await service.requestCaf({
+      context: contextDto,
+      tipoDTE,
+      quantity: 1,
+    });
+
+    expect(folioProvider.addCafXml).toHaveBeenCalledWith(context, rawCaf);
+    expect(result).toMatchObject({
+      requestId: `caf-request-${tipoDTE}`,
+      status: 'imported',
+      tipoDTE,
+      caf: {
+        rutEmisor: '76123456-0',
+        tipoDTE,
+      },
+    });
+    expectPublicPayloadSafe(result);
+  });
+
   it('returns public SII availability for CAF 33 folios', async () => {
     const result = await service.queryFolioAvailability({
       context: contextDto,

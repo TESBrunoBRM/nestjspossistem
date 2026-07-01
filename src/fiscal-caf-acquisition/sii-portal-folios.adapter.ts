@@ -424,7 +424,10 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       'El portal SII no entrego confirmacion de folios',
     );
 
-    const hiddenFields = extractInputValues(confirmationHtml);
+    const hiddenFields = enrichConfirmationFolioFields(
+      extractInputValues(confirmationHtml),
+      confirmationHtml,
+    );
     const generateFormUrl =
       findFirstFormActionUrl(confirmationHtml, confirmUrl) ?? generateUrl;
     if (
@@ -437,18 +440,45 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       );
     }
 
-    const cafResponse = await this.portalHttpPost(
+    let cafResponseUrl = generateFormUrl;
+    let cafResponse = await this.portalHttpPost(
       generateFormUrl,
       {
         ...hiddenFields,
-        ACEPTAR: 'Obtener',
+        ACEPTAR: resolvePortalSubmitValue(generateFormUrl, hiddenFields),
       },
       confirmUrl,
       cert,
       cookieJar,
     );
     let cafXml = extractCafXml(cafResponse);
-    const cafDownloadUrl = findCafDownloadUrl(cafResponse, generateFormUrl);
+    const nestedGenerateFormUrl = findFormActionUrl(
+      cafResponse,
+      cafResponseUrl,
+      /of_genera_folio/i,
+    );
+    if (!cafXml && nestedGenerateFormUrl) {
+      const nestedGenerateFields = extractInputValues(cafResponse);
+      if (Object.keys(nestedGenerateFields).length > 0) {
+        cafResponse = await this.portalHttpPost(
+          nestedGenerateFormUrl,
+          {
+            ...nestedGenerateFields,
+            ACEPTAR: resolvePortalSubmitValue(
+              nestedGenerateFormUrl,
+              nestedGenerateFields,
+            ),
+          },
+          cafResponseUrl,
+          cert,
+          cookieJar,
+        );
+        cafResponseUrl = nestedGenerateFormUrl;
+        cafXml = extractCafXml(cafResponse);
+      }
+    }
+
+    const cafDownloadUrl = findCafDownloadUrl(cafResponse, cafResponseUrl);
     if (!cafXml && cafDownloadUrl) {
       const downloadResponse = await this.portalHttpGet(
         cafDownloadUrl,
@@ -460,7 +490,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     }
     const cafArchiveFormUrl = findFormActionUrl(
       cafResponse,
-      generateUrl,
+      cafResponseUrl,
       /of_genera_archivo/i,
     );
     if (!cafXml && cafArchiveFormUrl) {
@@ -468,7 +498,10 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
         cafArchiveFormUrl,
         {
           ...extractInputValues(cafResponse),
-          ACEPTAR: 'Obtener',
+          ACEPTAR: resolvePortalSubmitValue(
+            cafArchiveFormUrl,
+            extractInputValues(cafResponse),
+          ),
         },
         generateUrl,
         cert,
@@ -1658,8 +1691,11 @@ function rutSingleSelectors(): string[] {
 function tipoDteLabels(tipoDTE: number): string[] {
   const labels: Record<number, string[]> = {
     33: ['33', 'FACTURA ELECTRONICA'],
+    34: ['34', 'FACTURA NO AFECTA O EXENTA ELECTRONICA'],
     39: ['39', 'BOLETA ELECTRONICA'],
     41: ['41', 'BOLETA EXENTA ELECTRONICA'],
+    46: ['46', 'FACTURA DE COMPRA ELECTRONICA'],
+    52: ['52', 'GUIA DE DESPACHO ELECTRONICA'],
     56: ['56', 'NOTA DE DEBITO ELECTRONICA'],
     61: ['61', 'NOTA DE CREDITO ELECTRONICA'],
   };
@@ -1846,6 +1882,16 @@ function resolveUrl(value: string, baseUrl: string): string {
   }
 }
 
+function resolvePortalSubmitValue(
+  formUrl: string,
+  fields: Record<string, string>,
+): string {
+  const currentValue = fields.ACEPTAR?.trim();
+  if (currentValue) return currentValue;
+
+  return /of_confirma_folio/i.test(formUrl) ? 'Solicitar' : 'Obtener';
+}
+
 function safeDebugValue(
   value: string | undefined | null,
   maxLength = 120,
@@ -1913,6 +1959,67 @@ function extractFolioAvailability(
     availableFolios,
     maxAuthorizedFolios,
   };
+}
+
+function enrichConfirmationFolioFields(
+  fields: Record<string, string>,
+  html: string,
+): Record<string, string> {
+  const enriched = { ...fields };
+  const text = normalizePortalTextForMatch(html);
+  const folioInicial = resolveConfirmationFolioValue(
+    enriched,
+    text,
+    ['FOLIO_INICIAL', 'FOLIO_INI'],
+    /\bFOLIO\s+INICIAL\b/,
+  );
+  if (folioInicial) {
+    enriched.FOLIO_INICIAL = folioInicial;
+    enriched.FOLIO_INI ??= folioInicial;
+  }
+
+  const folioFinal = resolveConfirmationFolioValue(
+    enriched,
+    text,
+    ['FOLIO_FINAL', 'FOLIO_FIN'],
+    /\bFOLIO\s+FINAL\b/,
+  );
+  if (folioFinal) {
+    enriched.FOLIO_FINAL = folioFinal;
+    enriched.FOLIO_FIN ??= folioFinal;
+  }
+
+  return enriched;
+}
+
+function resolveConfirmationFolioValue(
+  fields: Record<string, string>,
+  text: string,
+  fieldNames: string[],
+  label: RegExp,
+): string | undefined {
+  for (const fieldName of fieldNames) {
+    const value = fields[fieldName]?.trim();
+    if (value && value !== '0') return value;
+  }
+
+  const parsed = extractPortalIntegerAfter(text, label);
+  if (parsed !== undefined) return String(parsed);
+
+  const hasBlankInitialFolioField = fieldNames.some(
+    (fieldName) =>
+      fieldName === 'FOLIO_INICIAL' &&
+      Object.prototype.hasOwnProperty.call(fields, fieldName),
+  );
+  if (
+    hasBlankInitialFolioField &&
+    /\bINGRESE\s+FOLIO\s+INICIAL\b/.test(text) &&
+    /\bNO\s+REGISTRA\s+TIMBRAJE\s+ANTERIOR\b/.test(text)
+  ) {
+    return '1';
+  }
+
+  return undefined;
 }
 
 function extractPortalIntegerAfter(
