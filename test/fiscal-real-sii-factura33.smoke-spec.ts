@@ -500,7 +500,10 @@ async function ensureUsableCafAvailable(input: {
   }
 
   if (input.existingCaf33Path) {
-    await importExistingCaf33(input);
+    await importExistingCaf33({
+      ...input,
+      existingCaf33Path: input.existingCaf33Path,
+    });
 
     const importedStatusResponse = await request(testServer(input.app))
       .get('/api/fiscal/folios/status')
@@ -765,7 +768,10 @@ function sanitizeDiagnosticText(value: string): string {
     .replace(/TOKEN=[^;"'\s<]+/gi, 'TOKEN=[REDACTED]')
     .replace(/<TOKEN>[\s\S]*?<\/TOKEN>/gi, '<TOKEN>[REDACTED]</TOKEN>')
     .replace(/<RSASK>[\s\S]*?<\/RSASK>/gi, '<RSASK>[REDACTED]</RSASK>')
-    .replace(/<X509Certificate>[\s\S]*?<\/X509Certificate>/gi, '<X509Certificate>[REDACTED]</X509Certificate>');
+    .replace(
+      /<X509Certificate>[\s\S]*?<\/X509Certificate>/gi,
+      '<X509Certificate>[REDACTED]</X509Certificate>',
+    );
 }
 
 function writeLastUploadError(body: unknown): void {

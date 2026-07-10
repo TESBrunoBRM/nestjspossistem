@@ -8,5 +8,5 @@ Esta carpeta contiene solo documentacion propia de la plataforma fiscal y su con
 Separacion documental:
 
 - `docs_sii/`: documentos oficiales descargados del SII; no contiene propuesta ni estado interno.
-- `sii-engine/README.md`: API y uso del paquete fiscal embebido.
+- [Repositorio `sii-engine`](../../sii-engine/README.md): API y uso del motor fiscal independiente.
 - [Propuesta y roadmap del backend comercial](../../business_app_back/docs/sii-integration-proposal.md).

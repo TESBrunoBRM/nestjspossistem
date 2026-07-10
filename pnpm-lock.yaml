@@ -79,7 +79,7 @@ importers:
         version: 7.8.2
       sii-engine:
         specifier: workspace:*
-        version: link:sii-engine
+        version: link:../sii-engine
       swagger-ui-express:
         specifier: ^5.0.1
         version: 5.0.1(express@5.2.1)
@@ -157,7 +157,7 @@ importers:
         specifier: ^8.20.0
         version: 8.59.2(eslint@9.39.4)(typescript@5.9.3)
 
-  sii-engine:
+  ../sii-engine:
     dependencies:
       axios:
         specifier: ^1.9.0

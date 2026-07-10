@@ -1,15 +1,15 @@
 # Estado tecnico de business-app-sii
 
 Estado: fuente canonica
-Actualizado: 2026-07-09
+Actualizado: 2026-07-10
 
 Este documento contiene solo avances, validaciones y pendientes propios de `business-app-sii` y su motor `sii-engine`. La arquitectura comercial y la integracion con `business_app_back` se mantienen en [business_app_back/docs/sii-integration-proposal.md](../../business_app_back/docs/sii-integration-proposal.md).
 
 ## Resumen ejecutivo
 
-La plataforma ya tiene implementacion para custodia fiscal por emisor, obtencion/importacion de CAF, boleta 39, factura 33, consultas de envio y consulta DTE. Sin embargo, la auditoria del 2026-07-09 no permite declarar factura 33 como funcionalidad validada de extremo a extremo.
+La plataforma ya tiene implementacion para custodia fiscal por emisor, obtencion/importacion de CAF, boleta 39, factura 33, consultas de envio y consulta DTE. El 2026-07-10 se elimino la copia de `sii-engine` que estaba dentro de este repositorio; el unico motor canonico es ahora el repositorio hermano `../sii-engine`.
 
-El codigo de factura existe, pero la suite actual presenta fallos de confiabilidad, el typecheck no esta verde y el smoke real no alcanzo la etapa de emision: la adquisicion de CAF 33 excedio su timeout. Ademas, el smoke puede aprobar con estados SII rechazados porque solo exige strings no vacios.
+El motor separado y `business-app-sii` pasan typecheck, el motor pasa sus 103 tests y la aplicacion compila contra el enlace externo. Todavia no se puede declarar factura 33 validada de extremo a extremo: los unit tests de la aplicacion tienen fixtures CAF vencidos y el smoke real puede aprobar estados SII rechazados porque solo exige strings no vacios.
 
 ## Implementado
 
@@ -40,6 +40,15 @@ El codigo de factura existe, pero la suite actual presenta fallos de confiabilid
 
 Estos hitos historicos no reemplazan una regresion verde en la fecha actual.
 
+### Consolidacion de `sii-engine` del 2026-07-10
+
+- se elimino por completo `business-app-sii/sii-engine`
+- `pnpm-workspace.yaml`, el lockfile y `node_modules/sii-engine` apuntan a `../sii-engine`
+- se conservaron en el motor canonico los aportes utiles de la copia: DTE 46/52, multipart legacy, parser `RECEPCIONDTE` y contrato oficial `getEstDte`
+- se conservaron las defensas mas completas del repositorio separado: ISO-8859-1, parsing de `FRMA`, parsers de respuesta, polling, sanitizacion y registro de schemas
+- el motor independiente pasa 21 archivos de prueba y 103 tests
+- `business-app-sii` pasa `tsc --noEmit` y `nest build` consumiendo el repositorio separado
+
 ## Auditoria de pruebas del 2026-07-09
 
 No se modifico codigo de aplicacion ni de tests durante esta auditoria.
@@ -62,33 +71,11 @@ Los fixtures usan `FA=2026-01-01`. El motor considera expirado un CAF seis meses
 
 Los tests necesitan reloj controlado o fechas relativas. Una fecha fija convierte una suite valida en una suite rota con el paso del tiempo.
 
-#### Alto: el workspace instalado puede probar el motor equivocado
+#### Resuelto: topologia y cobertura del motor
 
-`pnpm-workspace.yaml` ya apunta a `./sii-engine`, pero durante esta auditoria `node_modules/sii-engine` seguia enlazado a `../sii-engine`. La primera corrida uso el motor hermano antiguo; despues se repitio temporalmente contra el motor embebido.
+El workspace usa exclusivamente `../sii-engine`; `node_modules/sii-engine` fue verificado contra esa ruta y ya no existe un motor dentro de `business-app-sii`. La suite propia del motor cubre CAF, TED, Latin-1, XMLDSig, transportes y parsers SII con 103 tests aprobados.
 
-Despues de cada cambio de topologia se debe ejecutar `pnpm install` y verificar el destino real del enlace. De lo contrario, una suite puede aprobar contra una implementacion distinta de la versionada en el repositorio.
-
-#### Alto: cobertura insuficiente del sii-engine embebido
-
-El paquete embebido contiene solo tres archivos de prueba y seis tests. No hay pruebas propias del paquete para:
-
-- parser CAF y nodos XML con atributos como `FRMA`
-- firma y verificacion TED
-- encoding ISO-8859-1 con datos acentuados
-- builder completo de factura 33
-- XMLDSig de DTE y envelope
-- parsing de rechazos/reparos de `QueryEstUp` y `QueryEstDte`
-
-Las unidades de Nest cubren parte del armado, pero mockean el transporte y no sustituyen tests del core.
-
-#### Alto: typecheck general no esta verde
-
-`tsc --noEmit` falla por dos grupos:
-
-- instalacion workspace incompleta para `vitest`, `tsup` y tipos de `node-forge`
-- errores propios en mocks, tipos de respuestas publicas y el camino opcional `existingCaf33Path`
-
-Jest no funciona como sustituto del typecheck; hoy ambos pueden entregar resultados diferentes.
+El typecheck general tambien esta verde despues de alinear los contratos entre ambos repositorios. CI debe conservar como gate la verificacion del destino del enlace para impedir que se reintroduzca una copia local.
 
 #### Medio: el E2E interno no prueba POST /facturas
 
@@ -102,23 +89,21 @@ El E2E de boleta comparte `internalId` entre casos. Si la emision falla, las pru
 
 El smoke completo de factura 33 excedio 300 segundos durante adquisicion de CAF. El hook `afterAll` tambien excedio 300 segundos y Jest informo handles abiertos. El adapter necesita cancelacion y cierre determinista cuando el test expira.
 
-### Riesgos de implementacion no cubiertos
+### Riesgos de implementacion pendientes
 
-- el `sii-engine` embebido firma el `DD` del TED usando UTF-8 aunque los XML declaran ISO-8859-1; la prueba real usa datos mayormente ASCII y no detecta diferencias con acentos
-- `parseCaf` convierte `FRMA` con `String(...)`; cuando el parser entrega un nodo con atributos, existe riesgo de obtener `[object Object]`
-
-Estos puntos requieren tests especificos antes de confiar en factura con datos tributarios reales que contengan caracteres Latin-1.
+El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos `FRMA` con atributos y tiene pruebas especificas para ambos casos. Permanecen pendientes la validacion XSD oficial, golden fixtures completos de factura y evidencia de aceptacion tributaria real con datos acentuados.
 
 ## Resultados ejecutados
 
 | Validacion | Resultado | Diagnostico |
 | --- | --- | --- |
 | Build por script Corepack | Fallo de entorno | `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` en el shim local |
-| Build JS directo del `sii-engine` embebido | Paso | CJS y ESM generados correctamente |
-| Typecheck aislado `sii-engine` con dependencias resueltas | Paso | El source del motor compila |
-| Tests `sii-engine` | 3 suites, 6 tests: todos pasan | Cobertura demasiado pequena para factura/TED/CAF |
-| Typecheck general `business-app-sii` | Fallo | Errores de workspace y tipos de tests/API |
-| Unit tests Nest contra motor embebido | 12/16 suites; 65/79 tests pasan | 14 fallos, principalmente CAF fixture expirado |
+| Build JS directo del `sii-engine` separado | Paso | CJS, ESM y declaraciones generados correctamente |
+| Typecheck aislado `sii-engine` | Paso | El source del motor compila |
+| Tests `sii-engine` | 21 archivos, 103 tests: todos pasan | Incluye los casos migrados desde la copia eliminada |
+| Typecheck general `business-app-sii` | Paso | Resuelve tipos desde `../sii-engine` |
+| Build `business-app-sii` | Paso | Nest compila consumiendo el motor separado |
+| Unit tests Nest contra motor separado | 12/16 suites; 65/79 tests pasan | 14 fallos por CAF fixtures expirados; no son errores de resolucion del paquete |
 | E2E interno | 1/2 suites; 9/15 tests pasan | 6 fallos, principalmente CAF expirado y cascada por `internalId` |
 | Bootstrap MiniStack | Paso | S3, DynamoDB y SSM creados/verificados |
 | Smoke custody MiniStack | Fallo | No encontro CAF activo porque el fixture esta expirado |
@@ -147,14 +132,14 @@ Estos puntos requieren tests especificos antes de confiar en factura con datos t
 
 - eliminar fechas CAF fijas o congelar el reloj
 - hacer que los smokes fallen ante estados rechazados o reparos no permitidos
-- agregar typecheck general como gate separado
-- verificar en CI que `sii-engine` resuelve al subdirectorio embebido
+- conservar typecheck general como gate separado
+- verificar en CI que `sii-engine` resuelve exclusivamente a `../sii-engine`
+- fallar CI si reaparece `business-app-sii/sii-engine`
 - aislar cada E2E o crear precondiciones independientes
 
 ### Hito 2: cobertura fiscal del core
 
-- tests de CAF con atributos XML y `FRMA` real
-- tests TED con Latin-1, acentos y verificacion con clave publica CAF
+- mantener tests de CAF con atributos XML, `FRMA` real y TED Latin-1
 - golden fixtures de factura 33 y validacion XSD
 - XMLDSig verificable para DTE y `SetDTE`
 - casos de aceptacion, rechazo, reparo y estado transitorio

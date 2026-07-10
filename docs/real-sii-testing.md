@@ -1,6 +1,6 @@
 # Pruebas locales y reales SII
 
-Actualizado: 2026-07-09
+Actualizado: 2026-07-10
 
 Esta guia describe como ejecutar las pruebas. El resultado vigente y sus hallazgos se mantienen solo en [current-status.md](./current-status.md).
 
@@ -10,7 +10,7 @@ Esta guia describe como ejecutar las pruebas. El resultado vigente y sus hallazg
 | --- | --- |
 | Unit Jest | Servicios Nest, providers, seguridad y builders orquestados con transporte mockeado |
 | E2E interno | API Nest real con SII mockeado |
-| Tests sii-engine | Core fiscal embebido |
+| Tests sii-engine | Core fiscal del repositorio independiente |
 | Smoke MiniStack | S3, DynamoDB, SSM y persistencia entre reinicios |
 | Smoke real boleta | Token, CAF, emision y consulta en certificacion SII |
 | Smoke real CAF 33 | Disponibilidad, scraping e importacion CAF 33 |
@@ -24,7 +24,7 @@ Despues de cambiar o actualizar la topologia del workspace:
 corepack pnpm install
 ```
 
-Verificar que el enlace use el motor embebido:
+Verificar que el enlace use el repositorio hermano:
 
 ```powershell
 Get-Item node_modules/sii-engine | Format-List Target
@@ -33,10 +33,10 @@ Get-Item node_modules/sii-engine | Format-List Target
 El destino debe terminar en:
 
 ```text
-business-app-sii\sii-engine
+business-app\sii-engine
 ```
 
-Si apunta a `business-app\sii-engine`, la instalacion esta probando el repositorio hermano antiguo.
+Si apunta a `business-app-sii\sii-engine`, existe una copia interna obsoleta que debe eliminarse. El workspace solo admite el repositorio separado.
 
 ## Assets sensibles
 
@@ -176,4 +176,3 @@ Los tests deben distinguir:
 - `test:real-sii:factura33` puede solicitar CAF y consumir un folio al emitir
 - usar variantes `existing-caf` para regresiones frecuentes
 - no ejecutar smokes reales en paralelo para el mismo emisor/tenant
-

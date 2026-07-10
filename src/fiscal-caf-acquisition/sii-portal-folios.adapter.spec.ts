@@ -95,9 +95,9 @@ describe('SiiPortalFoliosAdapter', () => {
   it('enables browser client certificates by default', () => {
     const { adapter } = createAdapter();
 
-    expect(
-      adapterInternals(adapter).browserClientCertificatesEnabled(),
-    ).toBe(true);
+    expect(adapterInternals(adapter).browserClientCertificatesEnabled()).toBe(
+      true,
+    );
   });
 
   it('allows browser client certificates to be disabled explicitly', () => {
@@ -105,9 +105,9 @@ describe('SiiPortalFoliosAdapter', () => {
       SII_PORTAL_BROWSER_CLIENT_CERT_ENABLED: 'false',
     });
 
-    expect(
-      adapterInternals(adapter).browserClientCertificatesEnabled(),
-    ).toBe(false);
+    expect(adapterInternals(adapter).browserClientCertificatesEnabled()).toBe(
+      false,
+    );
   });
 
   it('refreshes the token once when the portal session is invalid', async () => {
@@ -427,16 +427,22 @@ function createAdapter(
     }),
   } as unknown as ConfigService;
   const tokenProvider = {
-    getToken: jest.fn((context: IssuerContext) => {
-      const token = tokens[Math.min(tokenIndex, tokens.length - 1)];
-      tokenIndex += 1;
+    getToken: jest.fn(
+      (
+        context: IssuerContext,
+        _signingProvider: SigningProvider,
+        _forceRefresh?: boolean,
+      ) => {
+        const token = tokens[Math.min(tokenIndex, tokens.length - 1)];
+        tokenIndex += 1;
 
-      return Promise.resolve({
-        environment: context.environment,
-        obtainedAt: new Date('2026-05-26T12:00:00.000Z'),
-        token,
-      });
-    }),
+        return Promise.resolve({
+          environment: context.environment,
+          obtainedAt: new Date('2026-05-26T12:00:00.000Z'),
+          token,
+        });
+      },
+    ),
     invalidate: jest.fn(),
   };
   const signingProvider: SigningProvider = {

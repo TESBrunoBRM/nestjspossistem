@@ -1,6 +1,6 @@
 # Business App SII
 
-Backend fiscal privado NestJS para custodiar material tributario y operar con el SII mediante el paquete interno `sii-engine`.
+Backend fiscal privado NestJS para custodiar material tributario y operar con el SII mediante el paquete hermano `sii-engine`.
 
 Este repositorio no es la API publica de Flutter y no contiene el dominio comercial. `business_app_back` sigue siendo la frontera publica y delega aqui la emision fiscal.
 
@@ -10,7 +10,7 @@ Este repositorio no es la API publica de Flutter y no contiene el dominio comerc
 - [Estado actual, auditoria y proximos hitos](./docs/current-status.md)
 - [Pruebas locales y reales](./docs/real-sii-testing.md)
 - [Documentacion oficial SII](./docs_sii/)
-- [Motor fiscal embebido](./sii-engine/README.md)
+- [Motor fiscal independiente](../sii-engine/README.md)
 
 La propuesta de integracion comercial se mantiene en [business_app_back/docs/sii-integration-proposal.md](../business_app_back/docs/sii-integration-proposal.md) y no se duplica aqui.
 
@@ -33,11 +33,12 @@ La propuesta de integracion comercial se mantiene en [business_app_back/docs/sii
 ## Workspace
 
 ```text
-business-app-sii/
-  src/
-  test/
-  docs/
-  docs_sii/
+business-app/
+  business-app-sii/
+    src/
+    test/
+    docs/
+    docs_sii/
   sii-engine/
 ```
 
@@ -48,7 +49,7 @@ corepack enable
 corepack pnpm install
 ```
 
-Despues de instalar, `node_modules/sii-engine` debe apuntar a `./sii-engine`, no a un repositorio hermano.
+Despues de instalar, `node_modules/sii-engine` debe apuntar a `../sii-engine`. No debe existir un directorio `business-app-sii/sii-engine`.
 
 ## Desarrollo local
 

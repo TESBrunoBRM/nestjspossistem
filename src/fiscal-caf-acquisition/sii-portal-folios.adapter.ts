@@ -141,7 +141,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
         context: request.context,
         tipoDTE: request.tipoDTE,
         quantity: 1,
-        method: request.method,
+        method: 'sii_portal_automation',
       },
       {
         allowedTipoDTE: ALLOWED_CAF_ACQUISITION_TIPO_DTE,
