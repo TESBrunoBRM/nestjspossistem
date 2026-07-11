@@ -11,8 +11,11 @@ import {
 import { FiscalContextResolver } from '../fiscal/fiscal-context.resolver';
 import { FISCAL_FOLIO_PROVIDER } from '../fiscal-documents/fiscal-documents.tokens';
 import { QueryFolioAvailabilityDto } from './dto/query-folio-availability.dto';
-import { ALLOWED_CAF_ACQUISITION_TIPO_DTE } from './dto/request-caf-acquisition.dto';
-import { RequestCafAcquisitionDto } from './dto/request-caf-acquisition.dto';
+import {
+  ALLOWED_CAF_ACQUISITION_TIPO_DTE,
+  MAX_CAF_ACQUISITION_QUANTITY,
+  RequestCafAcquisitionDto,
+} from './dto/request-caf-acquisition.dto';
 import {
   type CafAcquisitionIdempotencyScope,
   type CafAcquisitionRepository,
@@ -40,23 +43,32 @@ export class FiscalCafAcquisitionService {
 
   async requestCaf(dto: RequestCafAcquisitionDto) {
     const context = await this.contextResolver.resolve(dto.context);
-    const request: CafAcquisitionRequest = {
+    const requestedCap = Math.min(dto.quantity, MAX_CAF_ACQUISITION_QUANTITY);
+    const requestTemplate: CafAcquisitionRequest = {
       context,
       tipoDTE: dto.tipoDTE,
-      quantity: dto.quantity,
+      quantity: requestedCap,
       method: 'sii_portal_automation',
       idempotencyKey: dto.idempotencyKey,
     };
 
-    assertCafAcquisitionRequest(request, {
+    assertCafAcquisitionRequest(requestTemplate, {
       allowedTipoDTE: ALLOWED_CAF_ACQUISITION_TIPO_DTE,
-      maxQuantity: 1000,
+      maxQuantity: MAX_CAF_ACQUISITION_QUANTITY,
     });
 
-    const idempotencyScope = this.idempotencyScope(request);
+    const idempotencyScope = this.idempotencyScope(requestTemplate);
     const cached = this.repository.findByIdempotencyKey(idempotencyScope);
     if (cached) return toPublicCafAcquisitionResult(cached);
 
+    const request: CafAcquisitionRequest = {
+      ...requestTemplate,
+      quantity: await this.resolveRequestQuantity(
+        context,
+        dto.tipoDTE,
+        requestedCap,
+      ),
+    };
     const result = await this.acquisitionProvider.requestCaf(request);
     const importedResult = await this.importDownloadedCaf(result);
     const saved = this.repository.save(importedResult, idempotencyScope);
@@ -87,6 +99,32 @@ export class FiscalCafAcquisitionService {
       status: 'imported',
       completedAt: result.completedAt ?? new Date(),
     };
+  }
+
+  private async resolveRequestQuantity(
+    context: IssuerContext,
+    tipoDTE: number,
+    requestedCap: number,
+  ): Promise<number> {
+    const availability = await this.availabilityProvider().queryAvailableFolios(
+      {
+        context,
+        tipoDTE,
+        method: 'sii_portal_availability_scraping',
+      },
+    );
+    if (availability.status !== 'available') return 1;
+
+    const portalLimits = [
+      availability.availableFolios,
+      availability.maxAuthorizedFolios,
+    ].filter(
+      (value): value is number => Number.isInteger(value) && Number(value) > 0,
+    );
+
+    return portalLimits.length > 0
+      ? Math.min(requestedCap, ...portalLimits)
+      : 1;
   }
 
   private idempotencyScope(

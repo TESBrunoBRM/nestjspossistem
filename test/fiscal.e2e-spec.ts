@@ -43,6 +43,11 @@ jest.mock('sii-engine', () => {
       }),
     })),
     LegacySiiClient: jest.fn().mockImplementation(() => ({
+      send: jest.fn().mockResolvedValue({
+        trackId: 'e2e-factura-track-333',
+        status: 'SOK',
+        rawResponse: '<xml>mock legacy send</xml>',
+      }),
       queryStatus: jest.fn().mockResolvedValue({
         trackId: 'e2e-track-123',
         status: 'SOK',
@@ -58,14 +63,17 @@ import { FiscalFolioProvider } from '../src/fiscal-documents/fiscal-folio.provid
 import { FiscalTokenProvider } from '../src/fiscal/fiscal-token.provider';
 import { ConfigService } from '@nestjs/config';
 import { SiiEnvironment, TipoDTE } from 'sii-engine';
+import {
+  setCurrentTestCertificateValidity,
+  TEST_CAF_AUTHORIZATION_DATE,
+} from './support/fiscal-fixtures';
 
 function createTestCert(): { certificatePem: string; privateKeyPem: string } {
   const keys = forge.pki.rsa.generateKeyPair(1024);
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '01';
-  cert.validity.notBefore = new Date('2026-01-01');
-  cert.validity.notAfter = new Date('2099-01-01');
+  setCurrentTestCertificateValidity(cert);
 
   const attrs = [
     { type: '2.5.4.5', value: '12345678-5' },
@@ -86,7 +94,6 @@ const generatedCert = createTestCert();
 
 describe('FiscalController (e2e)', () => {
   let app: INestApplication;
-  let internalId: string;
 
   beforeAll(async () => {
     jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
@@ -221,7 +228,7 @@ describe('FiscalController (e2e)', () => {
       tipoDTE: TipoDTE.BoletaElectronica,
       rangeStart: 200,
       rangeEnd: 205,
-      fechaAutorizacion: '2026-01-01',
+      fechaAutorizacion: TEST_CAF_AUTHORIZATION_DATE,
     });
     expectPublicPayloadSafe(response.body);
   });
@@ -357,46 +364,91 @@ describe('FiscalController (e2e)', () => {
       method: 'sii_portal_automation',
       rutEmisor: '76123456-0',
       tipoDTE: TipoDTE.BoletaElectronica,
-      quantityRequested: 25,
+      quantityRequested: 1,
       retryable: false,
     });
     expect(response.body.data.requestId).toBeDefined();
     expectPublicPayloadSafe(response.body);
   });
 
-  it('POST /api/fiscal/documents/boletas emits a boleta successfully', async () => {
-    const payload = {
-      context: {
-        fechaResolucion: '2020-01-01',
-        nroResolucion: 80,
-      },
-      document: {
-        idDoc: {
-          tipoDTE: TipoDTE.BoletaElectronica,
-          fechaEmision: '2026-05-25',
-        },
-        emisor: {
-          rutEmisor: '76123456-0',
-          rznSoc: 'EMPRESA DE PRUEBA',
-          giroEmis: 'VENTA AL POR MENOR',
-          acteco: 521100,
-          dirOrigen: 'AV. PROVIDENCIA 123',
-          cmnaOrigen: 'PROVIDENCIA',
-        },
-        detalles: [
-          { nroLinDet: 1, nmbItem: 'Chocolate', prcItem: 500, montoItem: 500 },
-        ],
-        totales: { mntTotal: 500 },
-      },
-    };
-
-    const response = await request(app.getHttpServer())
-      .post('/api/fiscal/documents/boletas')
+  it('POST /api/fiscal/folios/requests rejects CAF quantities above fifty', async () => {
+    await request(app.getHttpServer())
+      .post('/api/fiscal/folios/requests')
       .set('x-api-key', 'test-api-key')
-      .send(payload)
+      .send({
+        context: folioContext(),
+        tipoDTE: TipoDTE.BoletaElectronica,
+        quantity: 51,
+      })
+      .expect(400);
+  });
+
+  it('POST /api/fiscal/documents/facturas emits factura 33 through the legacy transport', async () => {
+    await request(app.getHttpServer())
+      .post('/api/fiscal/folios/cafs')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        cafXml: cafXml('76123456-0', 800, 805, TipoDTE.FacturaElectronica),
+      })
       .expect(201);
 
-    internalId = response.body.data.internalId;
+    const response = await request(app.getHttpServer())
+      .post('/api/fiscal/documents/facturas')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        document: {
+          idDoc: {
+            tipoDTE: TipoDTE.FacturaElectronica,
+            fechaEmision: new Date().toISOString().slice(0, 10),
+            formaPago: 1,
+          },
+          emisor: {
+            rutEmisor: '76123456-0',
+            rznSoc: 'EMPRESA DE PRUEBA',
+            giroEmis: 'SERVICIOS INFORMATICOS',
+            acteco: 620200,
+            dirOrigen: 'AV. PROVIDENCIA 123',
+            cmnaOrigen: 'PROVIDENCIA',
+          },
+          receptor: {
+            rutRecep: '60803000-K',
+            rznSocRecep: 'SERVICIO DE IMPUESTOS INTERNOS',
+            giroRecep: 'ADMINISTRACION PUBLICA',
+            dirRecep: 'TEATINOS 120',
+            cmnaRecep: 'SANTIAGO',
+          },
+          detalles: [
+            {
+              nroLinDet: 1,
+              nmbItem: 'Servicio E2E',
+              qtyItem: 1,
+              prcItem: 1000,
+              montoItem: 1000,
+            },
+          ],
+          totales: {
+            mntNeto: 1000,
+            tasaIVA: 19,
+            iva: 190,
+            mntTotal: 1190,
+          },
+        },
+      })
+      .expect(201);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data).toMatchObject({
+      trackId: 'e2e-factura-track-333',
+      status: 'SOK',
+    });
+    expect(response.body.data.folio).toBeGreaterThan(0);
+    expectPublicPayloadSafe(response.body);
+  });
+
+  it('POST /api/fiscal/documents/boletas emits a boleta successfully', async () => {
+    const response = await emitE2eBoleta(app);
 
     expect(response.body.success).toBe(true);
     expect(response.body.data.internalId).toBeDefined();
@@ -406,6 +458,8 @@ describe('FiscalController (e2e)', () => {
   });
 
   it('GET /api/fiscal/documents/:id/status checks status and increments attempts', async () => {
+    const emission = await emitE2eBoleta(app);
+    const internalId = requireInternalId(emission.body);
     const response = await request(app.getHttpServer())
       .get(`/api/fiscal/documents/${internalId}/status`)
       .set('x-api-key', 'test-api-key')
@@ -422,6 +476,8 @@ describe('FiscalController (e2e)', () => {
   });
 
   it('GET /api/fiscal/documents/:id/printed-sample retrieves print payload', async () => {
+    const emission = await emitE2eBoleta(app);
+    const internalId = requireInternalId(emission.body);
     const response = await request(app.getHttpServer())
       .get(`/api/fiscal/documents/${internalId}/printed-sample`)
       .set('x-api-key', 'test-api-key')
@@ -589,7 +645,7 @@ function cafXml(
       <RS>EMISOR TEST</RS>
       <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK>
         <M>${rsapkModulus}</M>
         <E>${rsapkExponent}</E>
@@ -605,4 +661,52 @@ function cafXml(
 
 function toEvenLengthHex(value: string): string {
   return value.length % 2 === 0 ? value : `0${value}`;
+}
+
+async function emitE2eBoleta(app: INestApplication) {
+  return request(app.getHttpServer())
+    .post('/api/fiscal/documents/boletas')
+    .set('x-api-key', 'test-api-key')
+    .send({
+      context: {
+        fechaResolucion: '2020-01-01',
+        nroResolucion: 80,
+      },
+      document: {
+        idDoc: {
+          tipoDTE: TipoDTE.BoletaElectronica,
+          fechaEmision: new Date().toISOString().slice(0, 10),
+        },
+        emisor: {
+          rutEmisor: '76123456-0',
+          rznSoc: 'EMPRESA DE PRUEBA',
+          giroEmis: 'VENTA AL POR MENOR',
+          acteco: 521100,
+          dirOrigen: 'AV. PROVIDENCIA 123',
+          cmnaOrigen: 'PROVIDENCIA',
+        },
+        detalles: [
+          { nroLinDet: 1, nmbItem: 'Chocolate', prcItem: 500, montoItem: 500 },
+        ],
+        totales: { mntTotal: 500 },
+      },
+    })
+    .expect(201);
+}
+
+function requireInternalId(body: unknown): string {
+  if (
+    typeof body === 'object' &&
+    body !== null &&
+    'data' in body &&
+    typeof body.data === 'object' &&
+    body.data !== null &&
+    'internalId' in body.data &&
+    typeof body.data.internalId === 'string' &&
+    body.data.internalId
+  ) {
+    return body.data.internalId;
+  }
+
+  throw new Error('La emision E2E no devolvio un internalId valido.');
 }

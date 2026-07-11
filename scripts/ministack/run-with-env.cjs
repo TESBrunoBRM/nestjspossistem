@@ -17,7 +17,7 @@ const child = spawn(command, commandArgs, {
   cwd: process.cwd(),
   env: process.env,
   stdio: 'inherit',
-  shell: process.platform === 'win32',
+  shell: false,
 });
 
 child.on('exit', (code, signal) => {
@@ -29,4 +29,3 @@ child.on('exit', (code, signal) => {
   }
   process.exit(code ?? 0);
 });
-

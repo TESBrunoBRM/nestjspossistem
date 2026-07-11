@@ -54,9 +54,12 @@ export function prepareRealSiiTestEnv(): void {
   process.env.SII_PORTAL_HTTP_SCRAPING_ENABLED ||= 'true';
   process.env.SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED ||= 'true';
   process.env.SII_PORTAL_CERT_LOGIN_ENABLED ||= 'true';
-  process.env.SII_PORTAL_HEADLESS ||= 'true';
+  process.env.SII_PORTAL_HEADLESS =
+    process.env.SII_PORTAL_DEBUG_BROWSER_VISIBLE === 'true' ? 'false' : 'true';
   process.env.SII_PORTAL_DEBUG_FORM ||= 'true';
+  process.env.SII_PORTAL_PROGRESS_LOG_ENABLED ||= 'true';
   process.env.SII_PORTAL_TIMEOUT_MS ||= '90000';
+  process.env.SII_PORTAL_HTTP_TIMEOUT_MS ||= '30000';
   clearFiscalBootstrapEnv();
 }
 

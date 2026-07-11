@@ -119,6 +119,7 @@ export class FiscalDocumentService {
         emisor: {
           ...input.emisor,
           rutEmisor: context.rutEmisor,
+          rznSoc: assignment.caf.da.razonSocial,
         },
         receptor: input.receptor ?? {
           rutRecep: '66666666-6',
@@ -255,6 +256,7 @@ export class FiscalDocumentService {
         emisor: {
           ...input.emisor,
           rutEmisor: context.rutEmisor,
+          rznSoc: assignment.caf.da.razonSocial,
         },
       };
 

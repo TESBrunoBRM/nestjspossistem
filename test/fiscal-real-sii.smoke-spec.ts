@@ -12,6 +12,7 @@ import { resolveProjectPath } from '../src/common/utils/project-path.util';
 import { BoletaSiiClient, SiiEnvironment, TipoDTE } from 'sii-engine';
 import { createFiscalTestApp } from './support/nest-test-app';
 import { optionalEnv, prepareRealSiiTestEnv } from './support/env-loader';
+import { assertNormalSmokeSendStatus } from './support/sii-smoke-assertions';
 
 prepareRealSiiTestEnv();
 
@@ -56,6 +57,9 @@ describe('Real SII certification flow (smoke)', () => {
   const environment = parseEnvironment(
     optionalEnv('REAL_SII_TEST_ENVIRONMENT') || 'CERTIFICACION',
   );
+  const statusSettleDelayMs = Number(
+    optionalEnv('REAL_SII_TEST_STATUS_SETTLE_MS') || '5000',
+  );
 
   beforeAll(async () => {
     if (!rutEmisor) {
@@ -88,6 +92,7 @@ describe('Real SII certification flow (smoke)', () => {
         `REAL_SII_TEST_NRO_RESOLUCION o SII_NRO_RESOLUCION es invalido (${nroResolucionRaw || 'vacio'}). Debe ser un entero mayor o igual a 0 y corresponder a la resolucion DTE real del emisor en SII.`,
       );
     }
+    assertValidSettleDelay(statusSettleDelayMs);
     try {
       loadCertificateMaterialFromP12(
         readFileSync(pfxPath),
@@ -187,44 +192,49 @@ describe('Real SII certification flow (smoke)', () => {
 
     const today = new Date().toISOString().slice(0, 10);
     const sendSpy = captureBoletaUploadAttempts();
-    const response = await request(testServer(app))
-      .post('/api/fiscal/documents/boletas')
-      .set('x-api-key', apiKey)
-      .send({
-        context: {
-          tenantId,
-          merchantId,
-          branchId,
-          rutEmisor,
-          environment,
-        },
-        document: {
-          idDoc: {
-            tipoDTE: TipoDTE.BoletaElectronica,
-            fechaEmision: today,
-          },
-          emisor: {
+    let response: Response;
+    try {
+      response = await request(testServer(app))
+        .post('/api/fiscal/documents/boletas')
+        .set('x-api-key', apiKey)
+        .send({
+          context: {
+            tenantId,
+            merchantId,
+            branchId,
             rutEmisor,
-            rznSoc: 'PRUEBA CERTIFICACION SII',
-            giroEmis: 'VENTA AL POR MENOR',
-            acteco: 521100,
-            dirOrigen: 'AV. PROVIDENCIA 123',
-            cmnaOrigen: 'PROVIDENCIA',
+            environment,
           },
-          detalles: [
-            {
-              nroLinDet: 1,
-              nmbItem: `Smoke ${today}`,
-              qtyItem: 1,
-              prcItem: 500,
-              montoItem: 500,
+          document: {
+            idDoc: {
+              tipoDTE: TipoDTE.BoletaElectronica,
+              fechaEmision: today,
             },
-          ],
-          totales: {
-            mntTotal: 500,
+            emisor: {
+              rutEmisor,
+              rznSoc: 'PRUEBA CERTIFICACION SII',
+              giroEmis: 'VENTA AL POR MENOR',
+              acteco: 521100,
+              dirOrigen: 'AV. PROVIDENCIA 123',
+              cmnaOrigen: 'PROVIDENCIA',
+            },
+            detalles: [
+              {
+                nroLinDet: 1,
+                nmbItem: `Smoke ${today}`,
+                qtyItem: 1,
+                prcItem: 500,
+                montoItem: 500,
+              },
+            ],
+            totales: {
+              mntTotal: 500,
+            },
           },
-        },
-      });
+        });
+    } finally {
+      sendSpy.mockRestore();
+    }
 
     if (response.status !== 201) {
       writeLastUploadError(response.body);
@@ -235,8 +245,6 @@ describe('Real SII certification flow (smoke)', () => {
       );
     }
 
-    sendSpy.mockRestore();
-
     const emitData = responseData<EmitBoletaApiData>(response);
     internalId = emitData.internalId;
     trackId = emitData.trackId;
@@ -244,7 +252,6 @@ describe('Real SII certification flow (smoke)', () => {
     expect(emitData.internalId).toBeTruthy();
     expect(emitData.trackId).toBeTruthy();
     expect(emitData.folio).toBeGreaterThan(0);
-    expect(emitData.status).toBeTruthy();
 
     writeDebugArtifacts(app, {
       internalId,
@@ -253,11 +260,19 @@ describe('Real SII certification flow (smoke)', () => {
       environment,
       trackId,
     });
+
+    assertNormalSmokeSendStatus(
+      emitData.status,
+      'Upload de boleta 39',
+      emitData.detail,
+    );
   });
 
   it('queries the boleta status with the returned trackId', async () => {
     expect(internalId).toBeTruthy();
     expect(trackId).toBeTruthy();
+
+    await delay(statusSettleDelayMs);
 
     const response = await request(testServer(app))
       .get(`/api/fiscal/documents/${internalId}/status`)
@@ -271,7 +286,11 @@ describe('Real SII certification flow (smoke)', () => {
 
     const statusData = responseData<SendStatusApiData>(response);
     expect(statusData.trackId).toBe(trackId);
-    expect(statusData.normalizedStatus).toBeTruthy();
+    assertNormalSmokeSendStatus(
+      statusData.normalizedStatus,
+      'Consulta de envio de boleta 39',
+      statusData.detail,
+    );
   });
 });
 
@@ -289,11 +308,13 @@ interface EmitBoletaApiData {
   trackId: string;
   folio: number;
   status: string;
+  detail?: string;
 }
 
 interface SendStatusApiData {
   trackId: string;
   normalizedStatus: string;
+  detail?: string;
 }
 
 interface CafRequestApiData {
@@ -369,7 +390,7 @@ async function ensureUsableCafAvailable(input: {
 
   if (!input.allowRequest) {
     throw new Error(
-      'No existe un CAF activo para la boleta de pruebas y REAL_SII_TEST_SKIP_CAF_REQUEST impide solicitar uno nuevo. Carga/importa un CAF antes de ejecutar este smoke.',
+      'No existe un CAF activo para la boleta de pruebas y esta etapa no solicita uno nuevo. La etapa previa de adquisicion debe terminar correctamente, o debe cargarse un CAF existente.',
     );
   }
 
@@ -409,6 +430,18 @@ async function ensureUsableCafAvailable(input: {
 function parseBooleanEnv(value?: string): boolean {
   if (!value) return false;
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function assertValidSettleDelay(value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > 60_000) {
+    throw new Error(
+      `REAL_SII_TEST_STATUS_SETTLE_MS es invalido (${String(value)}). Debe ser un entero entre 0 y 60000.`,
+    );
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function resolveRealSiiTestPfxPath(): string {

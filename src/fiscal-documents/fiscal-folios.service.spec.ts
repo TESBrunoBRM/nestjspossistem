@@ -10,6 +10,7 @@ import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
 import { FiscalFolioProvider } from './fiscal-folio.provider';
 import { FiscalFoliosService } from './fiscal-folios.service';
+import { TEST_CAF_AUTHORIZATION_DATE } from '../../test/support/fiscal-fixtures';
 
 const context: IssuerContext = {
   environment: SiiEnvironment.Certificacion,
@@ -75,7 +76,7 @@ describe('FiscalFoliosService', () => {
       tipoDTE: TipoDTE.BoletaElectronica,
       rangeStart: 1,
       rangeEnd: 5,
-      fechaAutorizacion: '2026-01-01',
+      fechaAutorizacion: TEST_CAF_AUTHORIZATION_DATE,
     });
     expectPublicPayloadSafe(result);
   });
@@ -206,7 +207,7 @@ function cafXml(rutEmisor: string, start: number, end: number): string {
       <RS>EMISOR TEST</RS>
       <TD>39</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK>
         <M>${rsapkModulus}</M>
         <E>${rsapkExponent}</E>

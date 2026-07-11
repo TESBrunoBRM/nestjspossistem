@@ -27,14 +27,17 @@ import {
   FISCAL_RVD_TRACKING_REPOSITORY,
   InMemoryFiscalRvdRepository,
 } from '../fiscal-rvd/fiscal-rvd.repository';
+import {
+  setCurrentTestCertificateValidity,
+  TEST_CAF_AUTHORIZATION_DATE,
+} from '../../test/support/fiscal-fixtures';
 
 function createTestCert(): { certificatePem: string; privateKeyPem: string } {
   const keys = forge.pki.rsa.generateKeyPair(1024);
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '01';
-  cert.validity.notBefore = new Date('2026-01-01');
-  cert.validity.notAfter = new Date('2099-01-01');
+  setCurrentTestCertificateValidity(cert);
 
   const attrs = [
     { type: '2.5.4.5', value: '12345678-5' },
@@ -254,6 +257,9 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(signedEnvelope).toContain('<Caratula version="1.0">');
       expect(signedEnvelope).toContain('<IndServicio>3</IndServicio>');
       expect(signedEnvelope).toContain('<RznSocEmisor');
+      expect(signedEnvelope).toContain(
+        '<RznSocEmisor>EMISOR TEST</RznSocEmisor>',
+      );
       expect(signedEnvelope).toContain('<GiroEmisor');
       expect(signedEnvelope).not.toContain('<Acteco>');
       expect(signedEnvelope).toContain('<FRMT algoritmo="SHA1withRSA">');
@@ -476,7 +482,7 @@ describe('Fiscal Services with Mock Transport', () => {
             },
             emisor: {
               rutEmisor: '11111111-1',
-              rznSoc: 'EMISOR TEST',
+              rznSoc: 'RAZON SOCIAL INCORRECTA DEL CLIENTE',
               giroEmis: 'SERVICIOS',
               acteco: 620200,
               dirOrigen: 'DIR TEST',
@@ -523,9 +529,14 @@ describe('Fiscal Services with Mock Transport', () => {
       >;
       const signedEnvelope = String(legacySendCalls[0]?.[0] ?? '');
       expect(signedEnvelope).toContain('<SetDTE ID="SetDoc">');
-      expect(signedEnvelope).toContain('<DTE version="1.0">');
-      expect(signedEnvelope).not.toContain('<DTE xmlns=');
+      expect(signedEnvelope).toMatch(
+        /<DTE(?: xmlns="http:\/\/www\.sii\.cl\/SiiDte")? version="1\.0">/,
+      );
       expect(signedEnvelope).toContain('<TipoDTE>33</TipoDTE>');
+      expect(signedEnvelope).toContain('<RznSoc>EMISOR TEST</RznSoc>');
+      expect(signedEnvelope).not.toContain(
+        'RAZON SOCIAL INCORRECTA DEL CLIENTE',
+      );
       expect(signedEnvelope).toContain('<FRMT algoritmo="SHA1withRSA">');
       expect(signedEnvelope).toContain('<FRMA algoritmo="SHA1withRSA">');
       expect(JSON.stringify(result)).not.toContain('rawResponse');
@@ -860,7 +871,7 @@ function cafXml(
       <RS>EMISOR TEST</RS>
       <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK>
         <M>${rsapkModulus}</M>
         <E>${rsapkExponent}</E>

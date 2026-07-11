@@ -47,9 +47,7 @@ describe('Real SII CAF 33 acquisition by portal scraping (smoke)', () => {
     optionalEnv('SII_PFX_PASSWORD') ??
     '';
   const cafQuantity = Number(
-    optionalEnv('REAL_SII_TEST_FACTURA33_CAF_QUANTITY') ||
-      optionalEnv('REAL_SII_TEST_CAF_QUANTITY') ||
-      '1',
+    optionalEnv('REAL_SII_TEST_FACTURA33_CAF_QUANTITY') || '50',
   );
   const environment = parseEnvironment(
     optionalEnv('REAL_SII_TEST_ENVIRONMENT') || 'CERTIFICACION',
@@ -86,9 +84,9 @@ describe('Real SII CAF 33 acquisition by portal scraping (smoke)', () => {
         `REAL_SII_TEST_NRO_RESOLUCION o SII_NRO_RESOLUCION es invalido (${nroResolucionRaw || 'vacio'}).`,
       );
     }
-    if (!Number.isInteger(cafQuantity) || cafQuantity < 1) {
+    if (!Number.isInteger(cafQuantity) || cafQuantity < 1 || cafQuantity > 50) {
       throw new Error(
-        `REAL_SII_TEST_FACTURA33_CAF_QUANTITY o REAL_SII_TEST_CAF_QUANTITY es invalido (${cafQuantity}).`,
+        `REAL_SII_TEST_FACTURA33_CAF_QUANTITY o REAL_SII_TEST_CAF_QUANTITY es invalido (${cafQuantity}). Debe ser un entero entre 1 y 50 y se usa como maximo.`,
       );
     }
 

@@ -7,6 +7,7 @@ import {
 } from 'sii-engine';
 import { loadCertificateMaterialFromP12 } from '../fiscal/fiscal-certificate.util';
 import { FiscalCustodyService } from './fiscal-custody.service';
+import { TEST_CAF_AUTHORIZATION_DATE } from '../../test/support/fiscal-fixtures';
 
 jest.mock('../fiscal/fiscal-certificate.util', () => {
   const actual = jest.requireActual<
@@ -132,7 +133,7 @@ function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
       <RS>EMISOR TEST</RS>
       <TD>39</TD>
       <RNG><D>${rangeStart}</D><H>${rangeEnd}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK><M>00</M><E>03</E></RSAPK>
       <IDK>1</IDK>
     </DA>
@@ -149,7 +150,7 @@ function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
       tipoDTE: TipoDTE.BoletaElectronica,
       rangeStart,
       rangeEnd,
-      fechaAutorizacion: '2026-01-01',
+      fechaAutorizacion: TEST_CAF_AUTHORIZATION_DATE,
       rsaPk: {
         modulus: '00',
         exponent: '03',

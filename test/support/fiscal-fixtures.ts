@@ -1,6 +1,12 @@
 import forge from 'node-forge';
 import { TipoDTE } from 'sii-engine';
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+export const TEST_CAF_AUTHORIZATION_DATE = formatDate(
+  new Date(Date.now() - ONE_DAY_MS),
+);
+
 export function createTestPfx(
   password: string,
   rutFirmante: string,
@@ -9,8 +15,7 @@ export function createTestPfx(
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '01';
-  cert.validity.notBefore = new Date('2026-01-01T00:00:00.000Z');
-  cert.validity.notAfter = new Date('2030-01-01T00:00:00.000Z');
+  setCurrentTestCertificateValidity(cert);
 
   const attrs = [
     { type: '2.5.4.5', value: rutFirmante },
@@ -41,8 +46,7 @@ export function createTestPfxWithoutRut(
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '02';
-  cert.validity.notBefore = new Date('2026-01-01T00:00:00.000Z');
-  cert.validity.notAfter = new Date('2030-01-01T00:00:00.000Z');
+  setCurrentTestCertificateValidity(cert);
 
   const attrs = [
     { name: 'commonName', value: commonName },
@@ -92,7 +96,7 @@ export function buildCafXml(
       <RS>EMISOR TEST</RS>
       <TD>${tipoDTE}</TD>
       <RNG><D>${rangeStart}</D><H>${rangeEnd}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK>
         <M>${rsapkModulus}</M>
         <E>${rsapkExponent}</E>
@@ -108,4 +112,17 @@ export function buildCafXml(
 
 function toEvenLengthHex(value: string): string {
   return value.length % 2 === 0 ? value : `0${value}`;
+}
+
+export function setCurrentTestCertificateValidity(
+  cert: forge.pki.Certificate,
+): void {
+  const now = new Date();
+  cert.validity.notBefore = new Date(now.getTime() - ONE_DAY_MS);
+  cert.validity.notAfter = new Date(now);
+  cert.validity.notAfter.setUTCFullYear(now.getUTCFullYear() + 2);
+}
+
+function formatDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }

@@ -1,8 +1,12 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { randomUUID } from 'crypto';
-import { existsSync } from 'fs';
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { Agent as HttpsAgent } from 'https';
 import { tmpdir } from 'os';
@@ -30,7 +34,10 @@ import {
 import { sanitizePublicPayload } from '../common/security/sensitive-redaction.util';
 import { FISCAL_SIGNING_PROVIDER } from '../fiscal/fiscal-provider.tokens';
 import { FiscalTokenProvider } from '../fiscal/fiscal-token.provider';
-import { ALLOWED_CAF_ACQUISITION_TIPO_DTE } from './dto/request-caf-acquisition.dto';
+import {
+  ALLOWED_CAF_ACQUISITION_TIPO_DTE,
+  MAX_CAF_ACQUISITION_QUANTITY,
+} from './dto/request-caf-acquisition.dto';
 import {
   type FolioAvailabilityRequest,
   type FolioAvailabilityResult,
@@ -54,6 +61,7 @@ const SESSION_RETRY_LIMIT = 1;
 const CERT_LOGIN_REDIRECT_LIMIT = 8;
 
 type LocatorScope = Page | Frame;
+type OperationProgress = (stage: string) => void;
 
 interface BrowserCookie {
   name: string;
@@ -71,9 +79,25 @@ interface ExtractedFolioAvailability {
   maxAuthorizedFolios: number;
 }
 
+interface ReobtencionForm {
+  actionUrl: string;
+  method: 'get' | 'post';
+  html: string;
+}
+
+interface ReobtencionContext {
+  rutBody: string;
+  dv: string;
+  tipoDTE: number;
+}
+
 @Injectable()
-export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
+export class SiiPortalFoliosAdapter
+  implements CafAcquisitionProvider, OnModuleDestroy
+{
   private readonly logger = new Logger(SiiPortalFoliosAdapter.name);
+  private readonly activeBrowserContexts = new Set<BrowserContext>();
+  private readonly activeOperationControllers = new Set<AbortController>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -81,6 +105,13 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     @Inject(FISCAL_SIGNING_PROVIDER)
     private readonly signingProvider: SigningProvider,
   ) {}
+
+  async onModuleDestroy(): Promise<void> {
+    for (const controller of this.activeOperationControllers) {
+      controller.abort();
+    }
+    await this.closeActiveBrowserContexts();
+  }
 
   async requestCaf(
     request: CafAcquisitionRequest,
@@ -98,11 +129,17 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     }
 
     const requestedAt = new Date();
+    this.logger.log(`Iniciando adquisicion CAF tipoDTE ${request.tipoDTE}`);
 
     try {
-      const cafXml = await this.downloadCafXmlWithSession(request);
+      const cafXml = await this.runWithOperationTimeout(
+        'Solicitud CAF al portal SII',
+        (signal, progress) =>
+          this.downloadCafXmlWithSession(request, signal, progress),
+      );
       const caf = parseCaf(cafXml);
       this.assertDownloadedCafMatchesRequest(caf, request);
+      this.logger.log(`CAF tipoDTE ${request.tipoDTE} descargado y validado`);
 
       return {
         requestId: randomUUID(),
@@ -118,6 +155,12 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       };
     } catch (error) {
       this.logger.warn(this.safeErrorMessage(error));
+      if (error instanceof SiiPortalManualActionError) {
+        return this.manualActionRequiredResult(
+          request,
+          this.safeErrorMessage(error),
+        );
+      }
       return {
         requestId: randomUUID(),
         status: 'failed',
@@ -220,14 +263,23 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
 
   private async downloadCafXmlWithSession(
     request: CafAcquisitionRequest,
+    signal: AbortSignal,
+    progress: OperationProgress,
   ): Promise<string> {
     let forceRefresh = false;
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= SESSION_RETRY_LIMIT; attempt += 1) {
+      this.assertOperationActive(signal);
       try {
-        return await this.downloadCafXmlAttempt(request, forceRefresh);
+        return await this.downloadCafXmlAttempt(
+          request,
+          forceRefresh,
+          signal,
+          progress,
+        );
       } catch (error) {
+        this.assertOperationActive(signal);
         lastError = error;
         if (!this.shouldRefreshSession(error, forceRefresh)) throw error;
 
@@ -287,11 +339,18 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
   private async downloadCafXmlAttempt(
     request: CafAcquisitionRequest,
     forceRefresh: boolean,
+    signal: AbortSignal,
+    progress: OperationProgress,
   ): Promise<string> {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sii-caf-'));
     let httpFailure: string | undefined;
 
     try {
+      this.assertOperationActive(signal);
+      progress(
+        `Cantidad CAF seleccionada: ${request.quantity} folio(s) para tipoDTE ${request.tipoDTE}`,
+      );
+      progress('Obteniendo token y material de firma para portal CAF');
       const authToken = await this.tokenProvider.getToken(
         request.context,
         this.signingProvider,
@@ -300,28 +359,46 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       const cert = await this.signingProvider.getSigningMaterial(
         request.context,
       );
+      this.assertPortalCertificateMaterial(cert);
+      progress(
+        `Certificado cliente disponible y vigente hasta ${cert.expiresAt.toISOString().slice(0, 10)}`,
+      );
+      this.assertOperationActive(signal);
       if (this.httpScrapingEnabled()) {
         try {
+          progress('Intentando adquisicion CAF por HTTP');
           return await this.downloadCafXmlViaHttp(
             request,
             cert,
             authToken.token,
+            progress,
           );
         } catch (error) {
+          if (error instanceof SiiPortalManualActionError) {
+            throw error;
+          }
           if (!this.playwrightFallbackEnabled()) {
             throw error;
           }
           httpFailure = this.safeErrorMessage(error);
           this.logger.warn(httpFailure);
+          progress(`Adquisicion CAF por HTTP fallo: ${httpFailure}`);
         }
       }
 
+      progress(
+        `Iniciando fallback Playwright para adquisicion CAF (headless=${String(
+          this.headless(),
+        )}, runtime=${this.browserRuntimeLabel()})`,
+      );
       const context = await this.createBrowserContext(
         request,
         userDataDir,
         cert,
       );
+      this.activeBrowserContexts.add(context);
       try {
+        this.assertOperationActive(signal);
         await this.addTokenCookies(
           context,
           request.context.environment,
@@ -329,7 +406,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
         );
         await this.addCertificateLoginCookies(context, request, cert);
         try {
-          return await this.downloadCafXml(context, request);
+          return await this.downloadCafXml(context, request, progress);
         } catch (error) {
           if (error instanceof SiiPortalSessionError || !httpFailure) {
             throw error;
@@ -340,7 +417,8 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
           );
         }
       } finally {
-        await context.close();
+        this.activeBrowserContexts.delete(context);
+        await context.close().catch(() => undefined);
       }
     } finally {
       await rm(userDataDir, { recursive: true, force: true });
@@ -351,6 +429,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     request: CafAcquisitionRequest,
     cert: CertificateMaterial,
     token: string,
+    progress: OperationProgress = () => undefined,
   ): Promise<string> {
     const loginCookies = await this.fetchCertificateLoginCookies(request, cert);
     const cookieJar = new Map(
@@ -478,6 +557,28 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     }
 
     if (!cafXml) {
+      if (detectTimbrajeDenial(cafResponse, confirmationHtml)) {
+        progress(
+          'El SII no autorizo un timbraje nuevo; intentando reobtencion CAF por HTTP',
+        );
+        try {
+          const reobtainedCaf = await this.reobtainCafXmlViaHttp(
+            request,
+            cert,
+            cookieJar,
+            progress,
+          );
+          progress('CAF reobtenido correctamente desde el portal SII');
+          return reobtainedCaf;
+        } catch (error) {
+          throw new SiiPortalManualActionError(
+            `El SII no autorizo un timbraje nuevo e impidio reobtener automaticamente un CAF previamente autorizado para ${tipoDteDisplayName(
+              request.tipoDTE,
+            )}. Revise situaciones pendientes y los rangos disponibles en Reobtencion de Folios del ambiente ${request.context.environment}. Diagnostico: ${this.safeErrorMessage(error)}`,
+          );
+        }
+      }
+
       const zeroAvailabilityCounters = detectZeroAvailabilityCounters(
         confirmationHtml,
         cafResponse,
@@ -494,6 +595,104 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     }
 
     return cafXml;
+  }
+
+  private async reobtainCafXmlViaHttp(
+    request: CafAcquisitionRequest,
+    cert: CertificateMaterial,
+    cookieJar: Map<string, BrowserCookie>,
+    progress: OperationProgress,
+  ): Promise<string> {
+    const baseUrl = this.portalBaseUrl(request.context.environment);
+    const { body: rutBody, dv } = splitRut(request.context.rutEmisor);
+    let currentUrl = new URL(
+      '/cvc_cgi/dte/rf_reobtencion1_folios',
+      baseUrl,
+    ).toString();
+    let html = await this.portalHttpGet(currentUrl, baseUrl, cert, cookieJar);
+
+    for (let step = 0; step < 5; step += 1) {
+      progress(`Reobtencion CAF por HTTP: paso ${step + 1}`);
+      this.assertHttpPortalStep(
+        html,
+        'El portal SII rechazo la sesion durante la reobtencion de folios',
+      );
+
+      const cafXml = await this.extractCafFromHttpResponse(
+        html,
+        currentUrl,
+        cert,
+        cookieJar,
+      );
+      if (cafXml) return cafXml;
+
+      const form = selectReobtencionForm(html, currentUrl, request.tipoDTE);
+      if (!form) {
+        throw new Error(
+          `El portal no entrego un formulario utilizable de reobtencion. ${extractFinalResponseHints(
+            html,
+          )}`,
+        );
+      }
+
+      const params = buildReobtencionParams(form, {
+        rutBody,
+        dv,
+        tipoDTE: request.tipoDTE,
+      });
+      if (!params) {
+        throw new Error(
+          `El portal no ofrecio un rango reobtenible para ${tipoDteDisplayName(
+            request.tipoDTE,
+          )}. ${extractFinalResponseHints(html)}`,
+        );
+      }
+
+      const referer = currentUrl;
+      currentUrl = form.actionUrl;
+      html =
+        form.method === 'get'
+          ? await this.portalHttpGet(
+              appendQueryParams(currentUrl, params),
+              referer,
+              cert,
+              cookieJar,
+            )
+          : await this.portalHttpPost(
+              currentUrl,
+              params,
+              referer,
+              cert,
+              cookieJar,
+            );
+    }
+
+    throw new Error(
+      `La reobtencion alcanzo el limite de pasos sin recibir CAF XML. ${extractFinalResponseHints(
+        html,
+      )}`,
+    );
+  }
+
+  private async extractCafFromHttpResponse(
+    html: string,
+    currentUrl: string,
+    cert: CertificateMaterial,
+    cookieJar: Map<string, BrowserCookie>,
+  ): Promise<string | undefined> {
+    const inlineCaf = extractCafXml(html);
+    if (inlineCaf) return inlineCaf;
+
+    const downloadUrl = findCafDownloadUrl(html, currentUrl);
+    if (!downloadUrl) return undefined;
+
+    const downloadResponse = await this.portalHttpGet(
+      downloadUrl,
+      currentUrl,
+      cert,
+      cookieJar,
+    );
+    return extractCafXml(downloadResponse);
   }
 
   private async queryAvailableFoliosViaHttp(
@@ -601,7 +800,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
           key: cert.privateKeyPem,
         }),
         maxRedirects: 0,
-        timeout: this.timeoutMs(),
+        timeout: this.httpTimeoutMs(),
         validateStatus: () => true,
       })
       .catch((error: unknown) => {
@@ -641,7 +840,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
           key: cert.privateKeyPem,
         }),
         maxRedirects: 0,
-        timeout: this.timeoutMs(),
+        timeout: this.httpTimeoutMs(),
         validateStatus: () => true,
       })
       .catch((error: unknown) => {
@@ -695,6 +894,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
   private async downloadCafXml(
     context: BrowserContext,
     request: CafAcquisitionRequest,
+    progress: OperationProgress = () => undefined,
   ): Promise<string> {
     const page = await context.newPage();
     const responseXmlCandidates: string[] = [];
@@ -702,8 +902,16 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     page.on('response', (response) => {
       void this.captureCafResponse(response, responseXmlCandidates);
     });
+    page.on('requestfailed', (failedRequest) => {
+      if (!failedRequest.isNavigationRequest()) return;
+      const failure = failedRequest.failure()?.errorText || 'error desconocido';
+      progress(
+        `Navegacion Playwright fallo en ${sanitizeUrl(failedRequest.url())}: ${safeDebugValue(failure, 200)}`,
+      );
+    });
 
     try {
+      progress('Abriendo portal SII en Playwright');
       await page.goto(this.startUrl(request.context.environment), {
         waitUntil: 'commit',
         timeout: this.timeoutMs(),
@@ -720,6 +928,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       .waitForLoadState('domcontentloaded', { timeout: shortTimeout() })
       .catch(() => undefined);
     await this.ensureAuthenticated(page);
+    progress('Sesion del portal SII autenticada');
 
     await this.tryFillRut(page, request.context.rutEmisor);
     await this.tryClick(page, continueSelectors(), /continuar|ingresar/i);
@@ -735,6 +944,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     await this.tryFillRut(page, request.context.rutEmisor);
     await this.selectTipoDte(page, request.tipoDTE);
     await this.fillQuantity(page, request.quantity);
+    progress(`Formulario CAF preparado para tipoDTE ${request.tipoDTE}`);
 
     const downloadPromise = page
       .waitForEvent('download', { timeout: this.timeoutMs() })
@@ -746,6 +956,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       /solicitar|numeraci|timbraje|continuar|enviar/i,
     );
     await this.waitAfterAction(page);
+    progress('Solicitud CAF enviada al portal');
 
     await this.tryClick(
       page,
@@ -753,6 +964,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       /confirmar|obtener|descargar|generar|aceptar/i,
     );
     await this.waitAfterAction(page);
+    progress('Confirmacion CAF enviada; esperando descarga');
 
     const download = await downloadPromise;
     const downloadedXml = download
@@ -773,6 +985,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       );
     }
 
+    progress('Respuesta CAF localizada en descarga o respuesta del portal');
     return cafXml;
   }
 
@@ -861,7 +1074,7 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
         },
         httpsAgent,
         maxRedirects: 0,
-        timeout: this.timeoutMs(),
+        timeout: this.httpTimeoutMs(),
         validateStatus: () => true,
       });
 
@@ -1313,18 +1526,17 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
   }
 
   private browserExecutablePath(): string | undefined {
-    const configured = this.configService.get<string>(
-      'SII_PORTAL_BROWSER_EXECUTABLE_PATH',
-    );
-    if (configured) return configured;
-
-    const edgePath =
-      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
-    return existsSync(edgePath) ? edgePath : undefined;
+    return this.configService.get<string>('SII_PORTAL_BROWSER_EXECUTABLE_PATH');
   }
 
   private browserChannel(): string | undefined {
     return this.configService.get<string>('SII_PORTAL_BROWSER_CHANNEL');
+  }
+
+  private browserRuntimeLabel(): string {
+    if (this.browserExecutablePath()) return 'ejecutable-configurado';
+    if (this.browserChannel()) return `channel-${this.browserChannel()}`;
+    return 'chromium-playwright';
   }
 
   private browserClientCertificatesEnabled(): boolean {
@@ -1346,11 +1558,89 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     return Number.isInteger(configured) && configured > 0 ? configured : 60000;
   }
 
-  private maxQuantity(): number {
+  private httpTimeoutMs(): number {
     const configured = Number(
-      this.configService.get<string | number>('SII_PORTAL_MAX_QUANTITY'),
+      this.configService.get<string | number>('SII_PORTAL_HTTP_TIMEOUT_MS'),
     );
-    return Number.isInteger(configured) && configured > 0 ? configured : 1000;
+    return Number.isInteger(configured) && configured > 0 ? configured : 30_000;
+  }
+
+  private operationTimeoutMs(): number {
+    const configured = Number(
+      this.configService.get<string | number>(
+        'SII_PORTAL_OPERATION_TIMEOUT_MS',
+      ),
+    );
+    return Number.isInteger(configured) && configured > 0
+      ? configured
+      : 180_000;
+  }
+
+  private async runWithOperationTimeout<T>(
+    label: string,
+    operation: (signal: AbortSignal, progress: OperationProgress) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timeoutMs = this.operationTimeoutMs();
+    this.activeOperationControllers.add(controller);
+    let lastStage = 'Inicio de operacion';
+    const progress: OperationProgress = (stage) => {
+      lastStage = stage;
+      this.reportOperationProgress(stage);
+    };
+
+    let timeout: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        void this.closeActiveBrowserContexts();
+        reject(
+          new Error(
+            `${label} excedio el timeout total de ${timeoutMs} ms. Ultima etapa: ${lastStage}. Se cerraron los recursos del navegador.`,
+          ),
+        );
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([
+        operation(controller.signal, progress),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.activeOperationControllers.delete(controller);
+    }
+  }
+
+  private assertOperationActive(signal: AbortSignal): void {
+    if (signal.aborted) {
+      throw new Error(
+        'Solicitud CAF cancelada por timeout o cierre del servicio.',
+      );
+    }
+  }
+
+  private async closeActiveBrowserContexts(): Promise<void> {
+    const contexts = Array.from(this.activeBrowserContexts);
+    this.activeBrowserContexts.clear();
+    await Promise.allSettled(contexts.map((context) => context.close()));
+  }
+
+  private reportOperationProgress(stage: string): void {
+    this.logger.log(stage);
+    if (
+      this.configService.get<string>('SII_PORTAL_PROGRESS_LOG_ENABLED') ===
+      'true'
+    ) {
+      process.stdout.write(
+        `[sii-portal-caf] ${new Date().toISOString()} ${stage}\n`,
+      );
+    }
+  }
+
+  private maxQuantity(): number {
+    return MAX_CAF_ACQUISITION_QUANTITY;
   }
 
   private selectorList(key: string, fallback: string[]): string[] {
@@ -1367,6 +1657,22 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
     if (!(error instanceof Error)) return 'Error desconocido en portal SII';
 
     return redactSensitiveMessage(error.message);
+  }
+
+  private assertPortalCertificateMaterial(cert: CertificateMaterial): void {
+    if (!cert.certificatePem.includes('BEGIN CERTIFICATE')) {
+      throw new Error(
+        'El material de firma no contiene un certificado PEM utilizable por el portal SII.',
+      );
+    }
+    if (!/BEGIN (?:RSA )?PRIVATE KEY/.test(cert.privateKeyPem)) {
+      throw new Error(
+        'El material de firma no contiene una clave privada PEM utilizable por el portal SII.',
+      );
+    }
+    if (cert.expiresAt.getTime() <= Date.now()) {
+      throw new Error('El certificado cliente esta vencido.');
+    }
   }
 
   private shouldRefreshSession(error: unknown, forceRefresh: boolean): boolean {
@@ -1388,7 +1694,10 @@ export class SiiPortalFoliosAdapter implements CafAcquisitionProvider {
       return message;
     }
 
-    const snapshot = await this.safePortalSnapshot(page).catch(() => undefined);
+    const snapshot = await settleWithin(
+      this.safePortalSnapshot(page),
+      2_000,
+    ).catch(() => undefined);
     if (!snapshot) return message;
 
     return `${message}. Estado portal: ${snapshot}`;
@@ -1761,17 +2070,226 @@ function extractFinalResponseHints(html: string): string {
     .map((match) => extractHtmlAttribute(match[1], 'name'))
     .filter((value): value is string => Boolean(value))
     .slice(0, 20);
-  const text = safeDebugValue(
-    decodeHtmlEntities(html)
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+  return `Hints: ${JSON.stringify({
+    forms,
+    hrefs,
+    inputs,
+    markers: extractSafePortalMarkers(html),
+  })}`;
+}
+
+function extractSafePortalMarkers(html: string): string[] {
+  const normalized = normalizePortalTextForMatch(html);
+  const markers: string[] = [];
+  if (/NO SE AUTORIZA TIMBRAJE/.test(normalized)) {
+    markers.push('TIMBRAJE_NO_AUTORIZADO');
+  }
+  if (/SITUACIONES PENDIENTES/.test(normalized)) {
+    markers.push('SITUACIONES_PENDIENTES_O_FOLIOS_SUFICIENTES');
+  }
+  if (/DISPONIBLE\s*:?[\s]+0\b/.test(normalized)) {
+    markers.push('DISPONIBLE_0');
+  }
+  if (/MAXIMO AUTORIZADO\s*:?[\s]+0\b/.test(normalized)) {
+    markers.push('MAXIMO_AUTORIZADO_0');
+  }
+  if (hasSessionFailureMarker(normalized)) {
+    markers.push('SESION_INVALIDA_O_EXPIRADA');
+  }
+  if (/NO (?:EXISTEN|HAY)[^.]*(?:RANGOS?|FOLIOS?)/.test(normalized)) {
+    markers.push('SIN_RANGOS_REOBTENIBLES');
+  }
+  return markers;
+}
+
+function detectTimbrajeDenial(...htmlOrMessages: string[]): boolean {
+  const normalized = normalizePortalTextForMatch(htmlOrMessages.join(' '));
+  return (
+    /NO SE AUTORIZA TIMBRAJE/.test(normalized) ||
+    /RESTRINGEN EL TIMBRAJE ELECTRONICO/.test(normalized)
+  );
+}
+
+function selectReobtencionForm(
+  html: string,
+  baseUrl: string,
+  tipoDTE: number,
+): ReobtencionForm | undefined {
+  const forms: ReobtencionForm[] = [];
+  for (const match of html.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/gi)) {
+    const attributes = match[1] ?? '';
+    const body = match[2] ?? '';
+    const action = extractHtmlAttribute(attributes, 'action') ?? baseUrl;
+    const method =
+      extractHtmlAttribute(attributes, 'method')?.toLowerCase() === 'get'
+        ? 'get'
+        : 'post';
+    forms.push({
+      actionUrl: new URL(action, baseUrl).toString(),
+      method,
+      html: `${match[0]}`,
+    });
+  }
+
+  const requestedLabels = tipoDteLabels(tipoDTE).map(normalizeForMatch);
+  return forms
+    .map((form) => {
+      const normalized = normalizePortalTextForMatch(form.html);
+      let score = /rf_reobtencion[123]_folios/i.test(form.actionUrl) ? 100 : 0;
+      if (requestedLabels.some((label) => normalized.includes(label)))
+        score += 20;
+      if (/<input\b/i.test(form.html)) score += 5;
+      return { form, score };
+    })
+    .sort((left, right) => right.score - left.score)[0]?.form;
+}
+
+function buildReobtencionParams(
+  form: ReobtencionForm,
+  context: ReobtencionContext,
+): Record<string, string> | undefined {
+  const normalized = normalizePortalTextForMatch(form.html);
+  if (/NO (?:EXISTEN|HAY)[^.]*(?:RANGOS?|FOLIOS?)/.test(normalized)) {
+    return undefined;
+  }
+
+  const params: Record<string, string> = {};
+  const radioCandidates: Array<{
+    name: string;
+    value: string;
+    context: string;
+  }> = [];
+  const submitCandidates: Array<{ name: string; value: string }> = [];
+
+  for (const match of form.html.matchAll(/<input\b([^>]*)>/gi)) {
+    const attributes = match[1] ?? '';
+    const name = extractHtmlAttribute(attributes, 'name');
+    if (!name || /\bdisabled\b/i.test(attributes)) continue;
+
+    const type = (
+      extractHtmlAttribute(attributes, 'type') ?? 'text'
+    ).toLowerCase();
+    const value = decodeHtmlEntities(
+      extractHtmlAttribute(attributes, 'value') ?? '',
+    );
+    if (type === 'radio') {
+      const start = Math.max(0, (match.index ?? 0) - 250);
+      const end = Math.min(form.html.length, (match.index ?? 0) + 500);
+      radioCandidates.push({
+        name,
+        value,
+        context: normalizePortalTextForMatch(form.html.slice(start, end)),
+      });
+      continue;
+    }
+    if (type === 'checkbox' && !/\bchecked\b/i.test(attributes)) continue;
+    if (type === 'submit' || type === 'button' || type === 'image') {
+      submitCandidates.push({ name, value });
+      continue;
+    }
+    if (type !== 'file') params[name] = value;
+  }
+
+  let documentTypeControlFound = false;
+  let requestedDocumentTypeAvailable = false;
+  for (const match of form.html.matchAll(
+    /<select\b([^>]*)>([\s\S]*?)<\/select>/gi,
+  )) {
+    const name = extractHtmlAttribute(match[1] ?? '', 'name');
+    if (!name) continue;
+    const options = extractSelectOptions(match[2] ?? '');
+    if (options.length === 0) continue;
+
+    const isDocumentType =
+      /(?:COD|TIPO).*(?:DOCTO|DTE)|(?:DOCTO|DTE).*(?:COD|TIPO)/i.test(name) ||
+      options.some(
+        (option) =>
+          option.value === String(context.tipoDTE) ||
+          tipoDteLabels(context.tipoDTE).some((label) =>
+            normalizeForMatch(option.label).includes(normalizeForMatch(label)),
+          ),
+      );
+    if (isDocumentType) {
+      documentTypeControlFound = true;
+      const selected = options.find(
+        (option) =>
+          option.value === String(context.tipoDTE) ||
+          tipoDteLabels(context.tipoDTE).some((label) =>
+            normalizeForMatch(option.label).includes(normalizeForMatch(label)),
+          ),
+      );
+      if (!selected) continue;
+      requestedDocumentTypeAvailable = true;
+      params[name] = selected.value;
+      continue;
+    }
+
+    const selected =
+      options.find((option) => option.selected) ??
+      options.find((option) => option.value.length > 0);
+    if (selected) params[name] = selected.value;
+  }
+
+  if (documentTypeControlFound && !requestedDocumentTypeAvailable) {
+    return undefined;
+  }
+
+  for (const name of Object.keys(params)) {
+    if (/^RUT(?:_EMP)?$/i.test(name)) params[name] = context.rutBody;
+    if (/^DV(?:_EMP)?$/i.test(name)) params[name] = context.dv;
+    if (/(?:COD|TIPO).*(?:DOCTO|DTE)|(?:DOCTO|DTE).*(?:COD|TIPO)/i.test(name)) {
+      params[name] = String(context.tipoDTE);
+    }
+  }
+  if ('RUT_EMP' in params) params.RUT_EMP = context.rutBody;
+  if ('DV_EMP' in params) params.DV_EMP = context.dv;
+
+  if (radioCandidates.length > 0) {
+    const requestedLabels = tipoDteLabels(context.tipoDTE).map(
+      normalizeForMatch,
+    );
+    const radio =
+      radioCandidates.find((candidate) =>
+        requestedLabels.some((label) => candidate.context.includes(label)),
+      ) ?? radioCandidates[0];
+    params[radio.name] = radio.value;
+  }
+
+  const submit =
+    submitCandidates.find((candidate) =>
+      /REOBTENER|OBTENER|DESCARGAR|CONTINUAR|SOLICITAR/i.test(candidate.value),
+    ) ?? submitCandidates[0];
+  if (submit) params[submit.name] = submit.value;
+
+  return Object.keys(params).length > 0 ? params : undefined;
+}
+
+function extractSelectOptions(
+  html: string,
+): Array<{ value: string; label: string; selected: boolean }> {
+  return Array.from(
+    html.matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/gi),
+  ).map((match) => ({
+    value: decodeHtmlEntities(
+      extractHtmlAttribute(match[1] ?? '', 'value') ?? '',
+    ),
+    label: decodeHtmlEntities(match[2] ?? '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim(),
-    800,
-  );
+    selected: /\bselected\b/i.test(match[1] ?? ''),
+  }));
+}
 
-  return `Hints: ${JSON.stringify({ forms, hrefs, inputs, text })}`;
+function appendQueryParams(
+  url: string,
+  params: Record<string, string>,
+): string {
+  const parsed = new URL(url);
+  for (const [name, value] of Object.entries(params)) {
+    parsed.searchParams.set(name, value);
+  }
+  return parsed.toString();
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -1954,9 +2472,36 @@ function redactSensitiveMessage(message: string): string {
     );
 }
 
+function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Diagnostico del portal excedio ${timeoutMs} ms`)),
+      timeoutMs,
+    );
+
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 class SiiPortalSessionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SiiPortalSessionError';
+  }
+}
+
+class SiiPortalManualActionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SiiPortalManualActionError';
   }
 }

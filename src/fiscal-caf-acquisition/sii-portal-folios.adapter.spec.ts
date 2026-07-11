@@ -10,6 +10,7 @@ import {
 } from 'sii-engine';
 import type { FiscalTokenProvider } from '../fiscal/fiscal-token.provider';
 import { SiiPortalFoliosAdapter } from './sii-portal-folios.adapter';
+import { TEST_CAF_AUTHORIZATION_DATE } from '../../test/support/fiscal-fixtures';
 
 const issuerContext = {
   environment: SiiEnvironment.Certificacion,
@@ -24,6 +25,7 @@ describe('SiiPortalFoliosAdapter', () => {
 
   beforeEach(() => {
     warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    jest.spyOn(Logger.prototype, 'log').mockImplementation();
   });
 
   afterEach(() => {
@@ -71,6 +73,48 @@ describe('SiiPortalFoliosAdapter', () => {
     );
   });
 
+  it('returns a failed result when the total CAF operation timeout expires', async () => {
+    const { adapter } = createAdapter(['token-1'], {
+      SII_PORTAL_OPERATION_TIMEOUT_MS: '25',
+    });
+    const internals = adapter as unknown as {
+      downloadCafXmlWithSession: (
+        request: CafAcquisitionRequest,
+        signal: AbortSignal,
+      ) => Promise<string>;
+    };
+    jest
+      .spyOn(internals, 'downloadCafXmlWithSession')
+      .mockImplementation(() => new Promise<string>(() => undefined));
+
+    const result = await adapter.requestCaf(cafRequest());
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      retryable: true,
+    });
+    expect(result.detail).toContain('excedio el timeout total de 25 ms');
+    expect(result.detail).toContain('Ultima etapa: Inicio de operacion');
+  });
+
+  it('fails before portal navigation when custody does not provide valid PEM material', async () => {
+    const { adapter, signingProvider } = createAdapter();
+    jest.mocked(signingProvider.getSigningMaterial).mockResolvedValue({
+      certificatePem: 'invalid-certificate',
+      privateKeyPem: 'invalid-private-key',
+      rutFirmante: '12345678-5',
+      nombre: 'Certificado invalido',
+      expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+    });
+
+    const result = await adapter.requestCaf(cafRequest());
+
+    expect(result).toMatchObject({ status: 'failed', retryable: true });
+    expect(result.detail).toContain(
+      'no contiene un certificado PEM utilizable',
+    );
+  });
+
   it('uses production TOKEN cookie domains when the issuer context is production', async () => {
     const { adapter } = createAdapter();
     const context = createMockBrowserContext();
@@ -108,6 +152,25 @@ describe('SiiPortalFoliosAdapter', () => {
     expect(adapterInternals(adapter).browserClientCertificatesEnabled()).toBe(
       false,
     );
+  });
+
+  it('uses Playwright-managed Chromium in headless mode by default', () => {
+    const { adapter } = createAdapter();
+
+    expect(adapterInternals(adapter).browserExecutablePath()).toBeUndefined();
+    expect(adapterInternals(adapter).headless()).toBe(true);
+  });
+
+  it('uses a custom browser executable only when explicitly configured', () => {
+    const { adapter } = createAdapter(['token-1'], {
+      SII_PORTAL_BROWSER_EXECUTABLE_PATH: '/opt/chromium/chrome',
+      SII_PORTAL_HEADLESS: 'false',
+    });
+
+    expect(adapterInternals(adapter).browserExecutablePath()).toBe(
+      '/opt/chromium/chrome',
+    );
+    expect(adapterInternals(adapter).headless()).toBe(false);
   });
 
   it('refreshes the token once when the portal session is invalid', async () => {
@@ -302,6 +365,128 @@ describe('SiiPortalFoliosAdapter', () => {
     expect(context.close).toHaveBeenCalled();
   });
 
+  it('reobtains an authorized CAF 33 over HTTP when SII denies a new timbraje', async () => {
+    const { adapter } = createAdapter(['token-1'], {
+      SII_PORTAL_CAF_AUTOMATION_ENABLED: 'true',
+      SII_PORTAL_CERT_LOGIN_ENABLED: 'false',
+      SII_PORTAL_HTTP_SCRAPING_ENABLED: 'true',
+      SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED: 'true',
+    });
+    const internals = adapterInternals(adapter);
+    const createBrowserContextSpy = jest.spyOn(
+      internals,
+      'createBrowserContext',
+    );
+    jest.spyOn(internals, 'fetchCertificateLoginCookies').mockResolvedValue([]);
+    jest
+      .spyOn(internals, 'portalHttpGet')
+      .mockResolvedValueOnce('<html>portal timbraje</html>')
+      .mockResolvedValueOnce(`
+        <form method="post" action="/cvc_cgi/dte/rf_reobtencion2_folios">
+          <input type="hidden" name="RUT_EMP" value="76123456">
+          <input type="hidden" name="DV_EMP" value="0">
+          <input type="submit" name="ACEPTAR" value="Continuar">
+        </form>`);
+    const postSpy = jest
+      .spyOn(internals, 'portalHttpPost')
+      .mockResolvedValueOnce('<html>rut aceptado</html>')
+      .mockResolvedValueOnce(
+        `
+        <form action="/cvc_cgi/dte/of_genera_folio">
+          <input name="RUT_EMP" value="76123456">
+          <input name="DV_EMP" value="0">
+          <input name="COD_DOCTO" value="33">
+        </form>`,
+      )
+      .mockResolvedValueOnce(
+        'NO SE AUTORIZA TIMBRAJE ELECTRONICO. Situaciones pendientes o folios suficientes.',
+      )
+      .mockResolvedValueOnce(
+        `
+        <form method="post" action="/cvc_cgi/dte/rf_reobtencion3_folios">
+          <select name="COD_DOCTO">
+            <option value="33">FACTURA ELECTRONICA</option>
+          </select>
+          <input type="radio" name="RANGO" value="15">
+          <input type="submit" name="ACEPTAR" value="Reobtener">
+        </form>`,
+      )
+      .mockResolvedValueOnce(
+        cafXml('76123456-0', 15, 15, TipoDTE.FacturaElectronica),
+      );
+
+    const result = await adapter.requestCaf(
+      cafRequest(TipoDTE.FacturaElectronica),
+    );
+
+    expect(result).toMatchObject({
+      status: 'downloaded',
+      tipoDTE: TipoDTE.FacturaElectronica,
+      caf: { da: expect.objectContaining({ rangeStart: 15, rangeEnd: 15 }) },
+      retryable: false,
+    });
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.stringContaining('rf_reobtencion3_folios'),
+      expect.objectContaining({
+        COD_DOCTO: '33',
+        RANGO: '15',
+        ACEPTAR: 'Reobtener',
+      }),
+      expect.any(String),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(createBrowserContextSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not open Playwright or leak portal identities after an explicit SII denial', async () => {
+    const { adapter } = createAdapter(['token-1'], {
+      SII_PORTAL_CAF_AUTOMATION_ENABLED: 'true',
+      SII_PORTAL_CERT_LOGIN_ENABLED: 'false',
+      SII_PORTAL_HTTP_SCRAPING_ENABLED: 'true',
+      SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED: 'true',
+    });
+    const internals = adapterInternals(adapter);
+    const createBrowserContextSpy = jest.spyOn(
+      internals,
+      'createBrowserContext',
+    );
+    jest.spyOn(internals, 'fetchCertificateLoginCookies').mockResolvedValue([]);
+    jest
+      .spyOn(internals, 'portalHttpGet')
+      .mockResolvedValueOnce('<html>portal timbraje</html>')
+      .mockResolvedValueOnce(
+        '<html>REOBTENCION DE FOLIOS: no hay rangos reobtenibles.</html>',
+      );
+    jest
+      .spyOn(internals, 'portalHttpPost')
+      .mockResolvedValueOnce('<html>rut aceptado</html>')
+      .mockResolvedValueOnce(
+        `
+        <form action="/cvc_cgi/dte/of_genera_folio">
+          <input name="COD_DOCTO" value="33">
+        </form>`,
+      )
+      .mockResolvedValueOnce(
+        'NO SE AUTORIZA TIMBRAJE ELECTRONICO para EMPRESA SENSIBLE. Mandatario PERSONA SENSIBLE.',
+      );
+
+    const result = await adapter.requestCaf(
+      cafRequest(TipoDTE.FacturaElectronica),
+    );
+
+    expect(result).toMatchObject({
+      status: 'manual_action_required',
+      tipoDTE: TipoDTE.FacturaElectronica,
+      retryable: false,
+    });
+    expect(result.detail).toContain('Reobtencion de Folios');
+    expect(JSON.stringify(result)).not.toMatch(
+      /EMPRESA SENSIBLE|PERSONA SENSIBLE/,
+    );
+    expect(createBrowserContextSpy).not.toHaveBeenCalled();
+  });
+
   it('queries available CAF 33 folios without generating a CAF', async () => {
     const { adapter } = createAdapter(['token-1'], {
       SII_PORTAL_CAF_AUTOMATION_ENABLED: 'true',
@@ -447,8 +632,13 @@ function createAdapter(
   };
   const signingProvider: SigningProvider = {
     getSigningMaterial: jest.fn().mockResolvedValue({
-      certificatePem: 'certificate-pem',
-      privateKeyPem: 'private-key-pem',
+      certificatePem:
+        '-----BEGIN CERTIFICATE-----\ncertificate-pem\n-----END CERTIFICATE-----',
+      privateKeyPem:
+        '-----BEGIN PRIVATE KEY-----\nprivate-key-pem\n-----END PRIVATE KEY-----',
+      rutFirmante: '12345678-5',
+      nombre: 'Certificado de prueba',
+      expiresAt: new Date('2099-01-01T00:00:00.000Z'),
     }),
   };
 
@@ -465,6 +655,8 @@ function createAdapter(
 
 function adapterInternals(adapter: SiiPortalFoliosAdapter): {
   browserClientCertificatesEnabled: () => boolean;
+  browserExecutablePath: () => string | undefined;
+  headless: () => boolean;
   addTokenCookies: (
     context: BrowserContext,
     environment: SiiEnvironment,
@@ -508,6 +700,8 @@ function adapterInternals(adapter: SiiPortalFoliosAdapter): {
 } {
   return adapter as unknown as {
     browserClientCertificatesEnabled: () => boolean;
+    browserExecutablePath: () => string | undefined;
+    headless: () => boolean;
     addTokenCookies: (
       context: BrowserContext,
       environment: SiiEnvironment,
@@ -589,7 +783,7 @@ function cafXml(
       <RS>EMISOR TEST</RS>
       <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK><M>00</M><E>03</E></RSAPK>
       <IDK>1</IDK>
     </DA>

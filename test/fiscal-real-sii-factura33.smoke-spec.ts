@@ -6,12 +6,17 @@ import { INestApplication } from '@nestjs/common';
 import { FiscalTokenProvider } from '../src/fiscal/fiscal-token.provider';
 import { FiscalContextResolver } from '../src/fiscal/fiscal-context.resolver';
 import { FISCAL_SIGNING_PROVIDER } from '../src/fiscal/fiscal-provider.tokens';
+import { FISCAL_CAF_ACQUISITION_PROVIDER } from '../src/fiscal-caf-acquisition/fiscal-caf-acquisition.tokens';
 import { FiscalDocumentRepository } from '../src/fiscal-documents/fiscal-document.repository';
 import { loadCertificateMaterialFromP12 } from '../src/fiscal/fiscal-certificate.util';
 import { resolveProjectPath } from '../src/common/utils/project-path.util';
 import { LegacySiiClient, SiiEnvironment, TipoDTE } from 'sii-engine';
 import { createFiscalTestApp } from './support/nest-test-app';
 import { optionalEnv, prepareRealSiiTestEnv } from './support/env-loader';
+import {
+  assertNormalSmokeDteStatus,
+  assertNormalSmokeSendStatus,
+} from './support/sii-smoke-assertions';
 
 prepareRealSiiTestEnv();
 
@@ -23,6 +28,8 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
   let internalId: string | undefined;
   let trackId: string | undefined;
   let factura33PreconditionBlocker: string | undefined;
+  let factura33EmissionBlocker: string | undefined;
+  let custodyOnlyCafRequestSpy: jest.SpyInstance | undefined;
 
   const tenantId =
     optionalEnv('REAL_SII_TEST_FACTURA33_TENANT_ID') ||
@@ -54,9 +61,7 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
     optionalEnv('SII_PFX_PASSWORD') ??
     '';
   const cafQuantity = Number(
-    optionalEnv('REAL_SII_TEST_FACTURA33_CAF_QUANTITY') ||
-      optionalEnv('REAL_SII_TEST_CAF_QUANTITY') ||
-      '1',
+    optionalEnv('REAL_SII_TEST_FACTURA33_CAF_QUANTITY') || '50',
   );
   const existingCaf33Path = resolveOptionalRealSiiTestCaf33Path();
   const skipCafRequest = parseBooleanEnv(
@@ -65,8 +70,18 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
   const environment = parseEnvironment(
     optionalEnv('REAL_SII_TEST_ENVIRONMENT') || 'CERTIFICACION',
   );
+  const statusSettleDelayMs = Number(
+    optionalEnv('REAL_SII_TEST_STATUS_SETTLE_MS') || '5000',
+  );
 
   beforeAll(async () => {
+    smokeLog('Validando precondiciones locales');
+    if (environment !== SiiEnvironment.Certificacion) {
+      throw new Error(
+        'El smoke fiscal-real-sii-factura33 solo puede ejecutarse con REAL_SII_TEST_ENVIRONMENT=CERTIFICACION. Se rechazo la ejecucion antes de contactar al SII.',
+      );
+    }
+    smokeLog('Ambiente validado: CERTIFICACION');
     if (!rutEmisor) {
       throw new Error(
         'Falta REAL_SII_TEST_RUT_EMISOR o SII_RUT_EMISOR para el smoke real de factura 33.',
@@ -97,6 +112,12 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
         `REAL_SII_TEST_NRO_RESOLUCION o SII_NRO_RESOLUCION es invalido (${nroResolucionRaw || 'vacio'}).`,
       );
     }
+    if (!Number.isInteger(cafQuantity) || cafQuantity < 1 || cafQuantity > 50) {
+      throw new Error(
+        `REAL_SII_TEST_FACTURA33_CAF_QUANTITY es invalido (${cafQuantity}). Debe ser un entero entre 1 y 50 y se usa como maximo, no como cantidad obligatoria.`,
+      );
+    }
+    assertValidSettleDelay(statusSettleDelayMs);
     if (existingCaf33Path && !existsSync(existingCaf33Path)) {
       throw new Error(
         `REAL_SII_TEST_FACTURA33_CAF_PATH apunta a un archivo inexistente: ${existingCaf33Path}`,
@@ -116,7 +137,22 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
     }
 
     apiKey = process.env.API_KEY_FRONTEND || 'dev-ministack-key';
-    app = await createFiscalTestApp();
+    app = await runWithHeartbeat(
+      'Inicializando aplicacion y custodia AWS',
+      () => createFiscalTestApp(),
+    );
+    if (skipCafRequest) {
+      const acquisitionProvider = app.get<{
+        requestCaf: (...args: unknown[]) => Promise<unknown>;
+      }>(FISCAL_CAF_ACQUISITION_PROVIDER);
+      custodyOnlyCafRequestSpy = jest
+        .spyOn(acquisitionProvider, 'requestCaf')
+        .mockRejectedValue(
+          new Error(
+            'El modo custody-only prohibe solicitar o reobtener CAF desde el SII.',
+          ),
+        );
+    }
   });
 
   afterAll(async () => {
@@ -127,6 +163,7 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
   });
 
   it('stores issuer in custody and acquires a real SII token', async () => {
+    smokeLog('Guardando emisor y certificado en custodia');
     const pfxBase64 = readFileSync(pfxPath).toString('base64');
 
     const upsertResponse = await request(testServer(app))
@@ -161,17 +198,19 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
       rutEmisor,
       environment,
     });
-    const token = await tokenProvider.getToken(
-      context,
-      app.get(FISCAL_SIGNING_PROVIDER),
+    const token = await runWithHeartbeat('Solicitando token real al SII', () =>
+      tokenProvider.getToken(context, app.get(FISCAL_SIGNING_PROVIDER)),
     );
 
     expect(token.environment).toBe(environment);
     expect(token.token).toBeTruthy();
+    smokeLog('Token SII obtenido correctamente');
   });
 
-  (skipCafRequest ? it.skip : it)(
-    'ensures a CAF 33 is available, requesting one from SII certification if needed',
+  it(
+    skipCafRequest
+      ? 'uses only the active CAF 33 already persisted in custody'
+      : 'ensures a CAF 33 is available, requesting one from SII certification if needed',
     async () => {
       await ensureUsableCafAvailable({
         app,
@@ -182,16 +221,23 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
         rutEmisor,
         environment,
         cafQuantity,
-        existingCaf33Path,
-        allowRequest: true,
+        existingCaf33Path: skipCafRequest ? undefined : existingCaf33Path,
+        allowRequest: !skipCafRequest,
         onExternalBlocker: (message) => {
           factura33PreconditionBlocker = message;
         },
       });
+      if (skipCafRequest) {
+        expect(custodyOnlyCafRequestSpy).not.toHaveBeenCalled();
+        smokeLog(
+          'CAF 33 custodiado confirmado; no se solicito ni reobtuvo CAF',
+        );
+      }
     },
   );
 
   it('emits a factura 33 in SII certification using persisted certificate and CAF 33', async () => {
+    smokeLog('Verificando CAF 33 antes de emitir');
     if (factura33PreconditionBlocker) {
       throw new Error(
         `No se ejecuta emision real DTE 33 porque falta CAF 33 autorizado. ${factura33PreconditionBlocker}`,
@@ -207,7 +253,7 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
       rutEmisor,
       environment,
       cafQuantity,
-      existingCaf33Path,
+      existingCaf33Path: skipCafRequest ? undefined : existingCaf33Path,
       allowRequest: false,
       onExternalBlocker: (message) => {
         factura33PreconditionBlocker = message;
@@ -216,97 +262,102 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
 
     const today = new Date().toISOString().slice(0, 10);
     const sendSpy = captureLegacyUploadAttempts();
-    const response = await request(testServer(app))
-      .post('/api/fiscal/documents/facturas')
-      .set('x-api-key', apiKey)
-      .send({
-        context: {
-          tenantId,
-          merchantId,
-          branchId,
-          rutEmisor,
-          environment,
-        },
-        document: {
-          idDoc: {
-            tipoDTE: TipoDTE.FacturaElectronica,
-            fechaEmision: today,
-            formaPago: 1,
-          },
-          emisor: {
-            rutEmisor,
-            rznSoc:
-              optionalEnv('REAL_SII_TEST_EMISOR_RAZON_SOCIAL') ||
-              resolveCafIssuerRazonSocial(existingCaf33Path) ||
-              'PRUEBA CERTIFICACION SII',
-            giroEmis:
-              optionalEnv('REAL_SII_TEST_EMISOR_GIRO') ||
-              'SERVICIOS INFORMATICOS',
-            acteco: Number(
-              optionalEnv('REAL_SII_TEST_EMISOR_ACTECO') || 620200,
-            ),
-            dirOrigen:
-              optionalEnv('REAL_SII_TEST_EMISOR_DIRECCION') ||
-              'AV. PROVIDENCIA 123',
-            cmnaOrigen:
-              optionalEnv('REAL_SII_TEST_EMISOR_COMUNA') || 'PROVIDENCIA',
-            ciudadOrigen:
-              optionalEnv('REAL_SII_TEST_EMISOR_CIUDAD') || 'SANTIAGO',
-          },
-          receptor: {
-            rutRecep:
-              optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_RUT') ||
-              optionalEnv('REAL_SII_TEST_RECEPTOR_RUT') ||
-              '60803000-K',
-            rznSocRecep:
-              optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_RAZON_SOCIAL') ||
-              optionalEnv('REAL_SII_TEST_RECEPTOR_RAZON_SOCIAL') ||
-              'SERVICIO DE IMPUESTOS INTERNOS',
-            giroRecep:
-              optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_GIRO') ||
-              optionalEnv('REAL_SII_TEST_RECEPTOR_GIRO') ||
-              'ADMINISTRACION PUBLICA',
-            dirRecep:
-              optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_DIRECCION') ||
-              optionalEnv('REAL_SII_TEST_RECEPTOR_DIRECCION') ||
-              'TEATINOS 120',
-            cmnaRecep:
-              optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_COMUNA') ||
-              optionalEnv('REAL_SII_TEST_RECEPTOR_COMUNA') ||
-              'SANTIAGO',
-            ciudadRecep:
-              optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_CIUDAD') ||
-              optionalEnv('REAL_SII_TEST_RECEPTOR_CIUDAD') ||
-              'SANTIAGO',
-          },
-          detalles: [
-            {
-              nroLinDet: 1,
-              nmbItem: `Smoke factura 33 ${today}`,
-              qtyItem: 1,
-              unmdItem: 'UN',
-              prcItem: 1000,
-              montoItem: 1000,
-            },
-          ],
-          totales: {
-            mntNeto: 1000,
-            tasaIVA: 19,
-            iva: 190,
-            mntTotal: 1190,
-          },
-        },
-      });
-
-    sendSpy.mockRestore();
+    let response: Response;
+    try {
+      response = await runWithHeartbeat(
+        'Construyendo, firmando y enviando factura 33',
+        () =>
+          request(testServer(app))
+            .post('/api/fiscal/documents/facturas')
+            .set('x-api-key', apiKey)
+            .send({
+              context: {
+                tenantId,
+                merchantId,
+                branchId,
+                rutEmisor,
+                environment,
+              },
+              document: {
+                idDoc: {
+                  tipoDTE: TipoDTE.FacturaElectronica,
+                  fechaEmision: today,
+                  formaPago: 1,
+                },
+                emisor: {
+                  rutEmisor,
+                  rznSoc: 'RESUELTA DESDE CAF CUSTODIADO',
+                  giroEmis:
+                    optionalEnv('REAL_SII_TEST_EMISOR_GIRO') ||
+                    'SERVICIOS INFORMATICOS',
+                  acteco: Number(
+                    optionalEnv('REAL_SII_TEST_EMISOR_ACTECO') || 620200,
+                  ),
+                  dirOrigen:
+                    optionalEnv('REAL_SII_TEST_EMISOR_DIRECCION') ||
+                    'AV. PROVIDENCIA 123',
+                  cmnaOrigen:
+                    optionalEnv('REAL_SII_TEST_EMISOR_COMUNA') || 'PROVIDENCIA',
+                  ciudadOrigen:
+                    optionalEnv('REAL_SII_TEST_EMISOR_CIUDAD') || 'SANTIAGO',
+                },
+                receptor: {
+                  rutRecep:
+                    optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_RUT') ||
+                    optionalEnv('REAL_SII_TEST_RECEPTOR_RUT') ||
+                    '60803000-K',
+                  rznSocRecep:
+                    optionalEnv(
+                      'REAL_SII_TEST_FACTURA33_RECEPTOR_RAZON_SOCIAL',
+                    ) ||
+                    optionalEnv('REAL_SII_TEST_RECEPTOR_RAZON_SOCIAL') ||
+                    'SERVICIO DE IMPUESTOS INTERNOS',
+                  giroRecep:
+                    optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_GIRO') ||
+                    optionalEnv('REAL_SII_TEST_RECEPTOR_GIRO') ||
+                    'ADMINISTRACION PUBLICA',
+                  dirRecep:
+                    optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_DIRECCION') ||
+                    optionalEnv('REAL_SII_TEST_RECEPTOR_DIRECCION') ||
+                    'TEATINOS 120',
+                  cmnaRecep:
+                    optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_COMUNA') ||
+                    optionalEnv('REAL_SII_TEST_RECEPTOR_COMUNA') ||
+                    'SANTIAGO',
+                  ciudadRecep:
+                    optionalEnv('REAL_SII_TEST_FACTURA33_RECEPTOR_CIUDAD') ||
+                    optionalEnv('REAL_SII_TEST_RECEPTOR_CIUDAD') ||
+                    'SANTIAGO',
+                },
+                detalles: [
+                  {
+                    nroLinDet: 1,
+                    nmbItem: `Smoke factura 33 ${today}`,
+                    qtyItem: 1,
+                    unmdItem: 'UN',
+                    prcItem: 1000,
+                    montoItem: 1000,
+                  },
+                ],
+                totales: {
+                  mntNeto: 1000,
+                  tasaIVA: 19,
+                  iva: 190,
+                  mntTotal: 1190,
+                },
+              },
+            }),
+      );
+    } finally {
+      sendSpy.mockRestore();
+    }
 
     if (response.status !== 201) {
       writeLastUploadError(response.body);
-      throw new Error(
-        `La emision real DTE 33 esperaba HTTP 201 y recibio ${response.status}. Body: ${JSON.stringify(
-          response.body,
-        )}`,
-      );
+      factura33EmissionBlocker = `La emision real DTE 33 esperaba HTTP 201 y recibio ${response.status}. Body: ${JSON.stringify(
+        response.body,
+      )}. El folio fue reservado antes del upload y no debe reutilizarse automaticamente hasta descartar recepcion por el SII.`;
+      throw new Error(factura33EmissionBlocker);
     }
 
     const emitData = responseData<EmitFacturaApiData>(response);
@@ -316,7 +367,6 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
     expect(emitData.internalId).toBeTruthy();
     expect(emitData.trackId).toBeTruthy();
     expect(emitData.folio).toBeGreaterThan(0);
-    expect(emitData.status).toBeTruthy();
     expect(JSON.stringify(response.body)).not.toMatch(secretLeakPattern());
 
     writeDebugArtifacts(app, {
@@ -326,55 +376,85 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
       environment,
       trackId,
     });
+
+    assertNormalSmokeSendStatus(
+      emitData.status,
+      'Upload de factura 33',
+      emitData.detail,
+    );
+    smokeLog(`Factura enviada; trackId recibido y folio ${emitData.folio}`);
   });
 
   it('queries the factura 33 send status with the returned trackId', async () => {
     const emitted = requireFactura33EmissionState({
       internalId,
       trackId,
-      blocker: factura33PreconditionBlocker,
+      blocker: factura33EmissionBlocker ?? factura33PreconditionBlocker,
     });
 
-    const response = await request(testServer(app))
-      .get(`/api/fiscal/documents/${emitted.internalId}/status`)
-      .set('x-api-key', apiKey)
-      .query({
-        tenantId,
-        rutEmisor,
-        environment,
-      })
-      .expect(200);
+    smokeLog(
+      `Esperando ${statusSettleDelayMs} ms antes de consultar estado de envio`,
+    );
+    await delay(statusSettleDelayMs);
+
+    const response = await runWithHeartbeat(
+      'Consultando estado de envio en SII',
+      () =>
+        request(testServer(app))
+          .get(`/api/fiscal/documents/${emitted.internalId}/status`)
+          .set('x-api-key', apiKey)
+          .query({
+            tenantId,
+            rutEmisor,
+            environment,
+          })
+          .expect(200),
+    );
 
     const statusData = responseData<SendStatusApiData>(response);
     expect(statusData.trackId).toBe(emitted.trackId);
-    expect(statusData.normalizedStatus).toBeTruthy();
     expect(JSON.stringify(response.body)).not.toMatch(secretLeakPattern());
+    assertNormalSmokeSendStatus(
+      statusData.normalizedStatus,
+      'Consulta de envio de factura 33',
+      statusData.detail,
+    );
+    smokeLog(`Estado de envio aceptable: ${statusData.normalizedStatus}`);
   });
 
   it('queries the factura 33 DTE status and printed sample without leaking secrets', async () => {
     const emitted = requireFactura33EmissionState({
       internalId,
       trackId,
-      blocker: factura33PreconditionBlocker,
+      blocker: factura33EmissionBlocker ?? factura33PreconditionBlocker,
     });
 
-    const dteStatusResponse = await request(testServer(app))
-      .get(`/api/fiscal/documents/${emitted.internalId}/dte-status`)
-      .set('x-api-key', apiKey)
-      .query({
-        tenantId,
-        rutEmisor,
-        environment,
-      })
-      .expect(200);
+    const dteStatusResponse = await runWithHeartbeat(
+      'Consultando estado tributario del DTE 33',
+      () =>
+        request(testServer(app))
+          .get(`/api/fiscal/documents/${emitted.internalId}/dte-status`)
+          .set('x-api-key', apiKey)
+          .query({
+            tenantId,
+            rutEmisor,
+            environment,
+          })
+          .expect(200),
+    );
 
     const dteStatusData = responseData<DteStatusApiData>(dteStatusResponse);
     expect(dteStatusData.tipoDTE).toBe(TipoDTE.FacturaElectronica);
     expect(dteStatusData.folio).toBeGreaterThan(0);
-    expect(dteStatusData.status).toBeTruthy();
     expect(JSON.stringify(dteStatusResponse.body)).not.toMatch(
       secretLeakPattern(),
     );
+    assertNormalSmokeDteStatus(
+      dteStatusData.status,
+      'Consulta DTE de factura 33',
+      dteStatusData.glosa,
+    );
+    smokeLog(`Estado DTE aceptable: ${dteStatusData.status}`);
 
     const printedSampleResponse = await request(testServer(app))
       .get(`/api/fiscal/documents/${emitted.internalId}/printed-sample`)
@@ -406,17 +486,20 @@ interface EmitFacturaApiData {
   trackId: string;
   folio: number;
   status: string;
+  detail?: string;
 }
 
 interface SendStatusApiData {
   trackId: string;
   normalizedStatus: string;
+  detail?: string;
 }
 
 interface DteStatusApiData {
   tipoDTE: number;
   folio: number;
   status: string;
+  glosa?: string;
 }
 
 interface PrintedSampleApiData {
@@ -462,6 +545,30 @@ function hasActiveCaf(statuses: unknown): boolean {
   });
 }
 
+function summarizeCustodiedCafs(statuses: unknown): string {
+  if (!Array.isArray(statuses) || statuses.length === 0) {
+    return 'No hay registros CAF 33 custodiados para este tenant/emisor/ambiente.';
+  }
+
+  const summaries = statuses.map((entry) => {
+    const item = entry as {
+      status?: unknown;
+      remaining?: unknown;
+      caf?: { rangeStart?: unknown; rangeEnd?: unknown };
+    };
+    const rangeStart = Number(item.caf?.rangeStart);
+    const rangeEnd = Number(item.caf?.rangeEnd);
+    const range =
+      Number.isInteger(rangeStart) && Number.isInteger(rangeEnd)
+        ? `${rangeStart}-${rangeEnd}`
+        : 'desconocido';
+    const remaining = Number(item.remaining ?? 0);
+    return `rango=${range}, estado=${String(item.status ?? 'desconocido')}, restantes=${Number.isFinite(remaining) ? remaining : 'desconocido'}`;
+  });
+
+  return `CAF 33 custodiados: ${summaries.join('; ')}.`;
+}
+
 function parseEnvironment(value: string): SiiEnvironment {
   const normalized = value.trim().toUpperCase();
   return normalized === 'PRODUCCION' ||
@@ -484,6 +591,7 @@ async function ensureUsableCafAvailable(input: {
   allowRequest: boolean;
   onExternalBlocker?: (message: string) => void;
 }): Promise<void> {
+  smokeLog('Consultando CAF 33 activo en custodia');
   const initialStatusResponse = await request(testServer(input.app))
     .get('/api/fiscal/folios/status')
     .set('x-api-key', input.apiKey)
@@ -494,12 +602,18 @@ async function ensureUsableCafAvailable(input: {
       tipoDTE: TipoDTE.FacturaElectronica,
     })
     .expect(200);
+  const initialStatuses = responseData<unknown>(initialStatusResponse);
 
-  if (hasActiveCaf(responseData<unknown>(initialStatusResponse))) {
+  if (hasActiveCaf(initialStatuses)) {
+    smokeLog('CAF 33 activo encontrado en custodia');
     return;
   }
 
+  const custodyDiagnostic = summarizeCustodiedCafs(initialStatuses);
+  smokeLog(`No hay CAF 33 activo en custodia. ${custodyDiagnostic}`);
+
   if (input.existingCaf33Path) {
+    smokeLog('Importando CAF 33 configurado para pruebas');
     await importExistingCaf33({
       ...input,
       existingCaf33Path: input.existingCaf33Path,
@@ -517,6 +631,7 @@ async function ensureUsableCafAvailable(input: {
       .expect(200);
 
     if (hasActiveCaf(responseData<unknown>(importedStatusResponse))) {
+      smokeLog('CAF 33 configurado importado y activo');
       return;
     }
 
@@ -526,30 +641,33 @@ async function ensureUsableCafAvailable(input: {
   }
 
   if (!input.allowRequest) {
-    const blocker =
-      'No existe un CAF activo para factura 33 y REAL_SII_TEST_SKIP_CAF_REQUEST impide solicitar uno nuevo. Carga/importa un CAF 33 antes de ejecutar este smoke.';
+    const blocker = `No existe un CAF activo para factura 33 y el modo custody-only prohibe solicitar o importar otro. ${custodyDiagnostic}`;
     input.onExternalBlocker?.(blocker);
     throw new Error(blocker);
   }
 
-  const cafResponse = await request(testServer(input.app))
-    .post('/api/fiscal/folios/requests')
-    .set('x-api-key', input.apiKey)
-    .send({
-      context: {
-        tenantId: input.tenantId,
-        merchantId: input.merchantId,
-        branchId: input.branchId,
-        rutEmisor: input.rutEmisor,
-        environment: input.environment,
-      },
-      tipoDTE: TipoDTE.FacturaElectronica,
-      quantity: input.cafQuantity,
-      idempotencyKey: `real-sii-caf-33-${new Date()
-        .toISOString()
-        .replace(/[^0-9]/g, '')}`,
-    })
-    .expect(201);
+  const cafResponse = await runWithHeartbeat(
+    'Solicitando y descargando CAF 33 desde el portal SII',
+    () =>
+      request(testServer(input.app))
+        .post('/api/fiscal/folios/requests')
+        .set('x-api-key', input.apiKey)
+        .send({
+          context: {
+            tenantId: input.tenantId,
+            merchantId: input.merchantId,
+            branchId: input.branchId,
+            rutEmisor: input.rutEmisor,
+            environment: input.environment,
+          },
+          tipoDTE: TipoDTE.FacturaElectronica,
+          quantity: input.cafQuantity,
+          idempotencyKey: `real-sii-caf-33-${new Date()
+            .toISOString()
+            .replace(/[^0-9]/g, '')}`,
+        })
+        .expect(201),
+  );
 
   const cafData = responseData<CafRequestApiData>(cafResponse);
   if (cafData.status !== 'imported') {
@@ -572,6 +690,7 @@ async function ensureUsableCafAvailable(input: {
     .expect(200);
 
   expect(hasActiveCaf(responseData<unknown>(finalStatusResponse))).toBe(true);
+  smokeLog('CAF 33 nuevo importado y disponible en custodia');
 }
 
 async function importExistingCaf33(input: {
@@ -627,7 +746,7 @@ function requireFactura33EmissionState(input: {
   }
 
   throw new Error(
-    `No hay Factura 33 emitida para consultar. La prueba real queda detenida antes de envio porque no existe CAF 33 usable. Causa: ${
+    `No hay Factura 33 con internalId y trackId disponible para consultar. Causa: ${
       input.blocker ?? 'internalId/trackId no fueron generados.'
     }`,
   );
@@ -636,6 +755,51 @@ function requireFactura33EmissionState(input: {
 function parseBooleanEnv(value?: string): boolean {
   if (!value) return false;
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function assertValidSettleDelay(value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > 60_000) {
+    throw new Error(
+      `REAL_SII_TEST_STATUS_SETTLE_MS es invalido (${String(value)}). Debe ser un entero entre 0 y 60000.`,
+    );
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function runWithHeartbeat<T>(
+  label: string,
+  action: () => PromiseLike<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  smokeLog(`${label}: inicio`);
+  const heartbeat = setInterval(() => {
+    smokeLog(`${label}: sigue en curso (${elapsedSeconds(startedAt)} s)`);
+  }, 10_000);
+  heartbeat.unref();
+
+  try {
+    const result = await action();
+    smokeLog(`${label}: completado (${elapsedSeconds(startedAt)} s)`);
+    return result;
+  } catch (error) {
+    smokeLog(`${label}: fallo (${elapsedSeconds(startedAt)} s)`);
+    throw error;
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+function smokeLog(message: string): void {
+  process.stdout.write(
+    `[real-sii:factura33] ${new Date().toISOString()} ${message}\n`,
+  );
+}
+
+function elapsedSeconds(startedAt: number): number {
+  return Math.round((Date.now() - startedAt) / 1000);
 }
 
 function resolveRealSiiTestPfxPath(): string {
@@ -658,14 +822,6 @@ function resolveOptionalRealSiiTestCaf33Path(): string | undefined {
     optionalEnv('REAL_SII_TEST_CAF33_PATH');
 
   return configuredPath ? resolveProjectPath(configuredPath) : undefined;
-}
-
-function resolveCafIssuerRazonSocial(cafPath?: string): string | undefined {
-  if (!cafPath || !existsSync(cafPath)) return undefined;
-
-  const cafXml = readFileSync(cafPath, 'utf8');
-  const match = cafXml.match(/<RS>([^<]+)<\/RS>/i);
-  return match?.[1]?.trim() || undefined;
 }
 
 type LegacySend = (
