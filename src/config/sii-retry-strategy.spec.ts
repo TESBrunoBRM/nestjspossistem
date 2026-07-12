@@ -17,7 +17,7 @@ describe('SII retry strategies', () => {
       'secure/real-sii-tests/artifacts/34/signed-envio-boleta-attempt.xml',
     );
     expect(factura.authScope(SiiEnvironment.Certificacion)).toBe('dte');
-    expect(boleta.authScope(SiiEnvironment.Certificacion)).toBe('boleta_rest');
+    expect(boleta.authScope(SiiEnvironment.Certificacion)).toBe('dte');
     expect(boleta.authScope(SiiEnvironment.Produccion)).toBe('boleta_rest');
     expect(factura.prepare).toBeUndefined();
     expect(boleta.prepare).toBeDefined();

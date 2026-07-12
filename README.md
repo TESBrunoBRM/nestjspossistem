@@ -8,7 +8,7 @@ Este repositorio no es la API publica de Flutter y no contiene el dominio comerc
 
 - [Indice tecnico](./docs/README.md)
 - [Estado actual, auditoria y proximos hitos](./docs/current-status.md)
-- [Pruebas locales y reales](./docs/real-sii-testing.md)
+- [Runbook de pruebas fiscales](./docs/real-sii-testing.md)
 - [Docker para certificacion y produccion](./docs/docker-testing-production.md)
 - [Documentacion oficial SII](./docs_sii/)
 - [Motor fiscal independiente](../sii-engine/README.md)
@@ -54,24 +54,12 @@ Despues de instalar, `node_modules/sii-engine` debe apuntar a `../sii-engine`. N
 
 ## Docker local
 
-```powershell
-pnpm.cmd run sii:cert -- custody test
-pnpm.cmd run sii:cert -- caf check --type=factura
-pnpm.cmd run sii:cert -- emit --type=factura
-```
-
-Para boleta se usa `--type=boleta`; tambien se aceptan los codigos `33` y `39`.
-La adquisicion de folios es siempre explicita mediante `caf acquire`.
-
 La configuracion no sensible vive en `.env`; PFX, password y API key viven en
 `secrets/`. Las pruebas reales solo se ejecutan mediante
 `compose.certification.yaml`.
 
-Produccion local:
-
-```powershell
-pnpm.cmd run docker:production:up
-```
+Todos los comandos y flujos de factura, boleta, CAF y recuperacion se mantienen
+exclusivamente en el [runbook de pruebas fiscales](./docs/real-sii-testing.md).
 
 API local:
 

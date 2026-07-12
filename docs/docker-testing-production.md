@@ -18,10 +18,13 @@ Estado: implementacion en curso.
 - [x] Migrar manualmente PFX/password locales a `secrets/`.
 - [x] Ejecutar factura 33 con CAF custodiado contra SII Certificacion: folio 17 aceptado.
 - [x] Revalidar el smoke completo de factura 33 con polling corregido.
-- [ ] Ejecutar boleta 39 con CAF custodiado contra SII Certificacion.
+- [x] Ejecutar boleta 39 con CAF custodiado contra SII Certificacion: folio 34 aceptado sin reparos.
 - [x] Retirar runners MiniStack, loaders `.env` y comandos legacy.
 - [x] Unificar adquisicion, consulta y emision 33/39 bajo `sii:cert`.
 - [x] Implementar retry 33/39 con Strategy, validacion offline e idempotencia por `trackId`.
+- [x] Separar boleta por ambiente: Maullin/DTE en Certificacion y Rahue/API REST en Produccion, sin fallback.
+- [x] Mantener factura y RVD aislados en el cliente DTE.
+- [x] Bloquear los smokes reales si el ambiente no es `CERTIFICACION`.
 
 ## Objetivo
 
@@ -68,20 +71,11 @@ despliegue, sin cambiar la imagen.
 El estado de MiniStack se conserva en un volumen nombrado para reutilizar PFX,
 CAF y reservas entre ejecuciones.
 
-## Flujo de testing
+## Operacion
 
-1. Construir el target `acceptance`.
-2. Levantar MiniStack y esperar su healthcheck.
-3. Inicializar la custodia local de manera idempotente.
-4. Montar PFX y password desde Docker Secrets.
-5. Usar por defecto un CAF activo ya custodiado.
-6. Emitir y consultar el estado final en SII Certificacion.
-7. Fallar ante rechazo, reparo no esperado, timeout o estado inconcluso.
-8. Eliminar los contenedores efimeros y conservar el volumen de custodia.
-
-La solicitud de un CAF nuevo sera un comando separado y explicito. Las suites no
-se ejecutaran en paralelo para un mismo emisor y no podran seleccionar el
-ambiente de produccion del SII.
+Este documento define la topologia Docker, no la secuencia de uso. Los comandos,
+precondiciones, diagramas y flujos de factura 33 y boleta 39 se mantienen solo
+en el [runbook de pruebas fiscales](./real-sii-testing.md).
 
 ## Configuracion y secretos
 
@@ -96,48 +90,10 @@ El PFX y password nunca se copian a la imagen ni se pasan como argumentos de
 build. En produccion se inyectan mediante el mecanismo de secretos del host.
 `CERTIFICACION` queda fijado en Compose y validado nuevamente por el test.
 
-## Preparacion local
+## Evidencia
 
-1. Crear `.env` a partir de `.env.example` y completar solo datos no sensibles.
-2. Colocar el PFX en `secrets/certificado.pfx`.
-3. Colocar solo la password en `secrets/pfx-password.txt`.
-4. Para produccion, colocar la API key en `secrets/api-key.txt`.
-
-No se debe copiar `REAL_SII_TEST_PFX_PASSWORD` al nuevo `.env`.
-
-## Comandos disponibles
-
-```powershell
-pnpm run docker:build
-pnpm run sii:cert -- custody test
-pnpm run sii:cert -- caf check --type=33
-pnpm run sii:cert -- caf acquire --type=39 --quantity=5
-pnpm run sii:cert -- emit --type=factura
-pnpm run sii:cert -- emit --type=boleta
-pnpm run sii:cert -- down
-pnpm run docker:production:up
-```
-
-`emit` usa solo CAF custodiado. `caf acquire` es la unica operacion autorizada
-para solicitar un CAF nuevo. Los aliases `factura` y `boleta` equivalen a los
-tipos DTE `33` y `39`.
-
-## Validacion realizada
-
-El 2026-07-11 se verifico sin contactar al SII:
-
-- build Linux de `runtime` y `acceptance`
-- runtime productivo saludable como usuario `pwuser` y sin Jest
-- Chromium Playwright funcionando en modo headless
-- MiniStack 1.3.54 saludable con estado persistente
-- bootstrap idempotente de S3, DynamoDB y SSM
-- smoke de custodia: 1 suite y 1 test aprobados
-
-El 2026-07-12 se verifico contra SII Certificacion:
-
-- adquisicion CAF 33 y persistencia en custodia Docker
-- factura 33 folio 17 aceptada por SII
-- el smoke detecto un falso negativo por consultar mientras el SII aun procesaba el envio; se incorporo polling acotado sin relajar rechazos ni reparos
+Los builds ejecutados, conteos de pruebas e hitos reales contra el SII se
+registran exclusivamente en [current-status.md](./current-status.md).
 
 ## Criterios de cierre
 

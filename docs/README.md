@@ -3,8 +3,8 @@
 Esta carpeta contiene solo documentacion propia de la plataforma fiscal y su conexion tecnica con el SII.
 
 - [Estado tecnico actual](./current-status.md): fuente canonica de avances, riesgos, pruebas y proximos hitos de `business-app-sii`.
-- [Pruebas locales y reales](./real-sii-testing.md): preparacion y ejecucion de suites Unit, E2E, MiniStack y certificacion SII.
-- [Docker para certificacion y produccion](./docker-testing-production.md): estructura portable, secretos y flujo local contra SII.
+- [Runbook de pruebas fiscales](./real-sii-testing.md): fuente unica de comandos y flujos para factura, boleta, CAF y recuperacion.
+- [Docker para certificacion y produccion](./docker-testing-production.md): topologia, targets, servicios y manejo de secretos.
 
 Separacion documental:
 

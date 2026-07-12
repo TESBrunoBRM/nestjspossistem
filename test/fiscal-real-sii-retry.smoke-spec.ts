@@ -145,9 +145,13 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
   });
 
   it(`executes ${operation} without reserving another folio`, async () => {
+    let retryResult =
+      operation === 'send'
+        ? readRetryResult(retryResultPath, tipoDTE, confirmedFolio)
+        : undefined;
     const sourceArtifact = readSiiArtifact(sourceEnvelopePath);
     let candidate = sourceArtifact;
-    if (operation === 'send' && strategy.prepare) {
+    if (operation === 'send' && strategy.prepare && !retryResult) {
       candidate = readPreparedArtifact(
         retryPreparationPath,
         sourceArtifact.buffer,
@@ -173,7 +177,7 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
       sha256: sha256(candidate.buffer),
       signatureTimestamp: envelope.signatureTimestamp,
     });
-    if (operation === 'send') {
+    if (operation === 'send' && !retryResult) {
       strategy.prepare
         ? assertRetryEnvelopeTimestampIsFresh(envelope)
         : assertRetryEnvelopeTimestampIsNotFuture(envelope);
@@ -196,7 +200,6 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
       return;
     }
 
-    let retryResult = readRetryResult(retryResultPath, tipoDTE, confirmedFolio);
     if (operation === 'send' && !retryResult) {
       assertNoUncertainAttempt(retryAttemptPath, tipoDTE, confirmedFolio);
     }
@@ -297,7 +300,7 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
       return;
     }
 
-    if (operation === 'send') {
+    if (operation === 'send' && !retryResult) {
       const schema = validateXmlAgainstOfficialSchema({
         xmlPath: candidate.path,
         schemaZipPath: strategy.schema.zipPath,
@@ -320,6 +323,10 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
             strategy.authScope(environment) === 'dte'
               ? 'dte_maullin'
               : 'boleta_rest',
+          transportProfile:
+            strategy.authScope(environment) === 'dte'
+              ? 'maullin_historical_v1'
+              : 'boleta_rest_v1',
         },
       );
     }
@@ -409,6 +416,10 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
           strategy.authScope(environment) === 'dte'
             ? 'dte_maullin'
             : 'boleta_rest',
+        transportProfile:
+          strategy.authScope(environment) === 'dte'
+            ? 'maullin_historical_v1'
+            : 'boleta_rest_v1',
       });
       writeRetryAttempt(retryAttemptPath, {
         tipoDTE,
@@ -485,6 +496,11 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
       });
     }
 
+    trace.event('polling_started', 'Consultando estado final del envio', {
+      trackId: retryResult.trackId,
+      timeoutMs: pollTimeoutMs,
+      intervalMs: pollIntervalMs,
+    });
     const finalStatus = await waitUntilFinal(
       retryResult.trackId,
       { context, token: token.token },
@@ -493,6 +509,17 @@ describe(`Real SII recovery for an already-reserved ${strategy.label} folio`, ()
         timeoutMs: pollTimeoutMs,
         intervalMs: pollIntervalMs,
         maxAttempts: 30,
+        onAttempt: (result, attempt) => {
+          trace.event('polling_attempt', 'Estado de envio consultado', {
+            trackId: result.trackId,
+            attempt: attempt + 1,
+            status: result.normalizedStatus,
+            terminal: result.isTerminal,
+            accepted: result.statistics?.aceptados,
+            rejected: result.statistics?.rechazados,
+            repairs: result.statistics?.reparos,
+          });
+        },
       },
     );
     assertNormalSmokeSendStatus(

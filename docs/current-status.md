@@ -5,36 +5,46 @@ Actualizado: 2026-07-12
 
 Este documento contiene solo avances, validaciones y pendientes propios de `business-app-sii` y su motor `sii-engine`. La arquitectura comercial y la integracion con `business_app_back` se mantienen en [business_app_back/docs/sii-integration-proposal.md](../../business_app_back/docs/sii-integration-proposal.md).
 
+Los comandos operativos y flujos de factura, boleta, CAF y retry se mantienen
+unicamente en [real-sii-testing.md](./real-sii-testing.md).
+
 ## Resumen ejecutivo
 
 La plataforma ya tiene implementacion para custodia fiscal por emisor, obtencion/importacion de CAF, boleta 39, factura 33, consultas de envio y consulta DTE. El 2026-07-10 se elimino la copia de `sii-engine` que estaba dentro de este repositorio; el unico motor canonico es ahora el repositorio hermano `../sii-engine`.
 
-El motor separado y `business-app-sii` pasan typecheck. El motor pasa 116 tests en Linux Docker, la aplicacion pasa 146 unit tests y 17 E2E, y MiniStack valida custodia persistente en S3, DynamoDB y SSM. Los fixtures CAF usan vigencia relativa y los smokes normales rechazan errores, reparos, estados desconocidos y estados DTE inconclusos.
+El motor separado y `business-app-sii` pasan typecheck. El motor pasa 120 tests en Linux Docker, la aplicacion pasa 146 unit tests y 17 E2E, y MiniStack valida custodia persistente en S3, DynamoDB y SSM. Los fixtures CAF usan vigencia relativa y los smokes normales rechazan errores, reparos, estados desconocidos y estados DTE inconclusos.
 
-Factura y RVD usan los servicios DTE correspondientes. Boleta usa el contrato
-REST dedicado del SII en ambos ambientes: token y consultas en `apicert.sii.cl`
-y upload en `pangal.sii.cl` para Certificacion; `api.sii.cl` y `rahue.sii.cl`
-para Produccion. No existe fallback hacia el upload DTE. Esta separacion no
-modifica `DteSiiClient`, usado por factura 33, ni el transporte DTE del RVD. Las
-fechas y firmas se generan explicitamente en `America/Santiago`,
-independientemente del huso horario del contenedor.
+Boleta tiene estrategias explicitas y mutuamente excluyentes por ambiente. En
+Certificacion usa el contrato empiricamente validado el 2026-06-01: token DTE,
+upload multipart a Maullin y consultas `QueryEstUp`/`QueryEstDte`. En Produccion
+usa token de boleta, upload REST a Rahue y consultas REST en `api.sii.cl`. No hay
+fallback automatico entre canales. Factura y RVD permanecen aislados en el
+cliente DTE y no fueron redirigidos por este cambio.
 
-El folio 34 de boleta permanece reconciliado como `FAU - DTE No Recibido`.
+El folio 34 de boleta fue recuperado y enviado exitosamente el 2026-07-12 mediante
+Maullin/DTE. El SII devolvio `trackId` 253005150 y el correo de resultado confirmo
+`EPR - Envio Procesado`, un documento informado, uno aceptado, cero rechazados y
+cero reparos.
 Los intentos REST previos de Certificacion devolvieron `HTTP 500 / Error 500` y
 no fueron registrados por el SII, pero no dejaron metadata suficiente para
 auditar completamente token, endpoint, headers y respuesta. El OpenAPI oficial
-1.0.5 identifica Pangal como servidor de Certificacion exclusivo para
+1.0.5 identifica Pangal como servidor de Certificacion para
 `POST /boleta.electronica.envio` y exige token especifico de boleta. El
-instructivo tecnico tambien declara que los servidores de boleta son distintos
-de Palena y Maullin. Por ello, Maullin queda descartado como contrato de boleta,
-no como fallback alternativo.
+instructivo tecnico declara que los servidores de boleta son distintos de
+Palena y Maullin. Esta documentacion contradice la evidencia empirica del
+2026-06-01. La decision implementada prioriza para Certificacion el contrato
+Maullin que obtuvo procesamiento real, manteniendo REST exclusivamente para
+Produccion. La contradiccion queda documentada y debera revisarse si el SII
+retira o modifica ese canal.
 
-Los intentos por Maullin alcanzaron el servidor, pero este respondio su HTML
-generico de error de upload, sin `RECEPCIONDTE` ni `trackId`. El ultimo uso un
-sobre recien preparado y validado, por lo que tambien descarto la antiguedad de
-la firma como causa. La reconciliacion posterior confirmo nuevamente `FAU - DTE
-No Recibido`. El folio no fue recibido ni debe considerarse consumido por el
-SII.
+Los intentos de recuperacion por Maullin alcanzaron el servidor, pero usaban un
+cliente distinto al envio historico y este respondio su HTML generico de error
+de upload, sin `RECEPCIONDTE` ni `trackId`. La comparacion identifico una
+diferencia concreta: el intento fallido enviaba `axios/1.16.0` como User-Agent,
+mientras el flujo exitoso usaba el identificador historico del cliente SII. La
+estrategia de Certificacion ahora reproduce endpoint, orden multipart, nombre y
+tipo del archivo, Latin-1 y User-Agent del contrato exitoso. La regresion real del
+folio 34 confirmo que este contrato vuelve a ser aceptado por el SII.
 
 Los comandos de recuperacion rehidratan idempotentemente el PFX/password desde
 los secretos Docker antes de usar la custodia. Esto repara referencias de perfil
@@ -51,6 +61,11 @@ Para recuperar cualquier folio ya reservado existe un smoke parametrizado que re
 Las nuevas emisiones ignoran la razon social enviada por el cliente y usan siempre `DA/RS` del CAF asignado, tanto en boleta como en EnvioDTE. Esto evita repetir el reparo `HED-1-863` cuando el CAF contiene el dato vigente.
 
 El parser del motor reconoce `RLV - DTE Aceptado con Reparos Leves` como `RPR`, contabiliza tanto `<REPARO>` como `<REPAROS>` y los smokes rechazan estadisticas con reparos aunque la cabecera sea `EPR`.
+
+`EPR - Envio Procesado` ahora es terminal para `QueryEstUp`, segun el manual
+oficial del SII. El polling conserva las estadisticas finales, reconoce las
+variantes singulares `<ACEPTA>`/`<RECHAZA>` y registra cada consulta sin exponer
+la respuesta fiscal cruda.
 
 ## Implementado
 
@@ -73,7 +88,7 @@ El parser del motor reconoce `RLV - DTE Aceptado con Reparos Leves` como `RPR`, 
 - factura 33 mediante `EnvioDTE`
 - endpoints declarados para 34, 46, 52, 56 y 61
 - consulta de factura/RVD por `QueryEstUp` y factura por `QueryEstDte`
-- consulta REST de boleta por Apicert/API segun ambiente
+- consulta de boleta por `QueryEstUp`/`QueryEstDte` en Certificacion y REST en Produccion
 - artefacto de muestra impresa con payload TED/PDF417
 - almacenamiento local de artefactos de smoke bajo `secure/real-sii-tests/artifacts`
 
@@ -90,7 +105,7 @@ Estos hitos historicos no reemplazan una regresion verde en la fecha actual.
 - `pnpm-workspace.yaml`, el lockfile y `node_modules/sii-engine` apuntan a `../sii-engine`
 - se conservaron en el motor canonico los aportes utiles de la copia: DTE 46/52, multipart EnvioDTE, parser `RECEPCIONDTE` y contrato oficial `getEstDte`
 - se conservaron las defensas mas completas del repositorio separado: ISO-8859-1, parsing de `FRMA`, parsers de respuesta, polling, sanitizacion y registro de schemas
-- el motor independiente pasa 21 archivos de prueba y 105 tests
+- el motor independiente pasa 25 archivos de prueba y 120 tests
 - `business-app-sii` pasa `tsc --noEmit` y `nest build` consumiendo el repositorio separado
 
 ## Auditoria de pruebas del 2026-07-09
@@ -139,21 +154,22 @@ El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos 
 
 ## Resultados ejecutados
 
-| Validacion                                 | Resultado                             | Diagnostico                                                                            |
-| ------------------------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------- |
-| Build por script Corepack                  | Fallo de entorno                      | `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` en el shim local                              |
-| Build JS directo del `sii-engine` separado | Paso                                  | CJS, ESM y declaraciones generados correctamente                                       |
-| Typecheck aislado `sii-engine`             | Paso                                  | El source del motor compila                                                            |
-| Tests `sii-engine`                         | 24 archivos; 116/116 pasan            | Incluye REST de boleta, XMLDSig, DTE/factura y RVD                                     |
-| Typecheck general `business-app-sii`       | Paso                                  | Resuelve tipos desde `../sii-engine`                                                   |
-| Build `business-app-sii`                   | Paso                                  | Nest compila consumiendo el motor separado                                             |
-| Unit tests Nest contra motor separado      | 20/20 suites; 146/146 tests pasan     | Incluye recuperacion firmada, `FAU`, CAF adaptativa y runtime headless                  |
-| E2E interno                                | 2/2 suites; 17/17 tests pasan         | Incluye limite CAF de 50, POST de factura 33 y emisiones aisladas por caso             |
-| Bootstrap MiniStack                        | Paso                                  | S3, DynamoDB y SSM creados/verificados                                                 |
-| Smoke custody MiniStack                    | Paso                                  | PFX/password/CAF persisten entre reinicios y permiten reservar folio                   |
-| Smoke factura 33 con CAF existente         | Paso                                  | CAF 33 adquirido, persistido y reutilizado desde MiniStack Docker                      |
-| Factura 33 real contra certificacion       | Aceptada por SII                      | Folio 17 aceptado; el smoke original dio falso negativo por estado transitorio         |
-| Polling corregido de factura 33            | Unitarios verdes; regresion pendiente | `FAU` se trata como no recibido; la consulta debe respetar la ventana de procesamiento |
+| Validacion                                 | Resultado                             | Diagnostico                                                                                             |
+| ------------------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Build por script Corepack                  | Fallo de entorno                      | `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` en el shim local                                               |
+| Build JS directo del `sii-engine` separado | Paso                                  | CJS, ESM y declaraciones generados correctamente                                                        |
+| Typecheck aislado `sii-engine`             | Paso                                  | El source del motor compila                                                                             |
+| Tests `sii-engine`                         | 25 archivos; 120/120 pasan            | Incluye estrategias separadas de boleta, contrato wire Maullin, polling EPR, XMLDSig, DTE/factura y RVD |
+| Typecheck general `business-app-sii`       | Paso                                  | Resuelve tipos desde `../sii-engine`                                                                    |
+| Build `business-app-sii`                   | Paso                                  | Nest compila consumiendo el motor separado                                                              |
+| Unit tests Nest contra motor separado      | 20/20 suites; 146/146 tests pasan     | Incluye recuperacion firmada, `FAU`, CAF adaptativa y runtime headless                                  |
+| E2E interno                                | 2/2 suites; 17/17 tests pasan         | Incluye limite CAF de 50, POST de factura 33 y emisiones aisladas por caso                              |
+| Bootstrap MiniStack                        | Paso                                  | S3, DynamoDB y SSM creados/verificados                                                                  |
+| Smoke custody MiniStack                    | Paso                                  | PFX/password/CAF persisten entre reinicios y permiten reservar folio                                    |
+| Smoke factura 33 con CAF existente         | Paso                                  | CAF 33 adquirido, persistido y reutilizado desde MiniStack Docker                                       |
+| Factura 33 real contra certificacion       | Aceptada por SII                      | Folio 17 aceptado; el smoke original dio falso negativo por estado transitorio                          |
+| Polling corregido de factura 33            | Unitarios verdes; regresion pendiente | `FAU` se trata como no recibido; la consulta debe respetar la ventana de procesamiento                  |
+| Boleta 39 real contra certificacion        | Aceptada por SII                      | Folio 34, trackId 253005150, `EPR`, 1 aceptada, 0 rechazadas y 0 reparos                                |
 
 ## Checklist de diagnostico: boleta 39, folio 34
 
@@ -163,17 +179,27 @@ smokes rechaza cualquier otro valor. No se prueba contra Produccion.
 
 ### Matriz de evidencia
 
-| ID | Prueba o evidencia | Resultado | Conclusion |
-| --- | --- | --- | --- |
-| B39-01 | Identidad del artefacto y reserva | DTE 39, folio 34, emisor esperado; no reserva otro folio | Correcto |
-| B39-02 | `retry validate` sobre original | XSD, TED/CAF y ambas XMLDSig validas | XML y firmas descartados como causa conocida |
-| B39-03 | `retry prepare` y nueva validacion | Renueva timestamps y XMLDSig; TED preservado; todo valido | Preparacion correcta |
-| B39-04 | REST Certificacion previo | `HTTP 500`; reconciliacion posterior `FAU` | No recibido; causa inconclusa por falta de metadata de transporte |
-| B39-05 | Maullin con sobre original | HTML generico sin `trackId`; luego `FAU` | No recibido |
-| B39-06 | Maullin con sobre recien firmado, 2026-07-12 20:35Z | Mismo HTML generico; luego `FAU` | Antiguedad de firma descartada |
-| B39-07 | OpenAPI SII 1.0.5 e instructivo de boleta | Pangal exclusivo para POST de Certificacion; token y consultas REST de boleta | Maullin descartado como canal de boleta |
-| B39-08 | Contrato local corregido | Pangal/Apicert en Certificacion; Rahue/API en Produccion; multipart de cinco campos | Implementado, sin upload real posterior |
-| B39-09 | Aislamiento de factura y RVD | Conservan `DteSiiClient` y endpoints DTE | Sin cambio funcional intencional |
+| ID     | Prueba o evidencia                                   | Resultado                                                                                                               | Conclusion                                                             |
+| ------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| B39-01 | Identidad del artefacto y reserva                    | DTE 39, folio 34, emisor esperado; no reserva otro folio                                                                | Correcto                                                               |
+| B39-02 | `retry validate` sobre original                      | XSD, TED/CAF y ambas XMLDSig validas                                                                                    | XML y firmas descartados como causa conocida                           |
+| B39-03 | `retry prepare` y nueva validacion                   | Renueva timestamps y XMLDSig; TED preservado; todo valido                                                               | Preparacion correcta                                                   |
+| B39-04 | REST Certificacion previo                            | `HTTP 500`; reconciliacion posterior `FAU`                                                                              | No recibido; causa inconclusa por falta de metadata de transporte      |
+| B39-05 | Maullin con sobre original                           | HTML generico sin `trackId`; luego `FAU`                                                                                | No recibido                                                            |
+| B39-06 | Maullin con sobre recien firmado, 2026-07-12 20:35Z  | Mismo HTML generico; luego `FAU`                                                                                        | Antiguedad de firma descartada                                         |
+| B39-07 | OpenAPI SII 1.0.5 e instructivo de boleta            | Pangal exclusivo para POST de Certificacion; token y consultas REST de boleta                                           | Contrato oficial identificado                                          |
+| B39-08 | Commits `d7b37a5` y `f2e384a`, 2026-06-01            | Maullin, token DTE, `form-data`, Latin-1 y `application/octet-stream`                                                   | Contrato historico localizado                                          |
+| B39-09 | Aislamiento de factura y RVD                         | Conservan `DteSiiClient` y endpoints DTE                                                                                | Sin cambio funcional intencional                                       |
+| B39-10 | Artefactos reales 26 y 31                            | `trackId` 250347014 y 250350294; correos SII con envio procesado                                                        | Maullin funciono realmente ese dia                                     |
+| B39-11 | Comparacion XML 31 aceptado vs. 34                   | Misma estructura, orden, elementos y atributos; solo cambian datos fiscales, CAF, fechas y firmas derivadas             | No hay diferencia estructural que explique el fallo                    |
+| B39-12 | Primer intento normal del folio 34                   | Error local `Cannot read properties of undefined (reading 'transport')`                                                 | No alcanzo al SII y no prueba fallo del cliente normal                 |
+| B39-13 | Cabeceras historicas vs. retry                       | Historico: Mozilla 4.0; retry: `axios/1.16.0`. `Content-Length` y multipart equivalentes                                | Diferencia de transporte concreta y reproducible                       |
+| B39-14 | Seleccion explicita por ambiente                     | Certificacion usa Maullin/DTE; Produccion usa Rahue/API REST; no existe fallback                                        | Canales separados en estrategias                                       |
+| B39-15 | Contrato wire de Certificacion                       | Verifica orden multipart, Latin-1, nombre/tipo de archivo, User-Agent historico, `Content-Length` y ausencia de chunked | Contrato historico reproducido localmente                              |
+| B39-16 | Regresiones sin red SII                              | Motor 120/120, Nest 146/146, E2E 17/17 y build runtime/acceptance verdes                                                | Cambio integrado sin mezclar factura                                   |
+| B39-17 | `retry reconcile` con Maullin/DTE, 2026-07-12 22:13Z | `FAU - DTE No Recibido`; no reservo folios ni realizo upload                                                            | Folio 34 habilitado para preparar un sobre fresco                      |
+| B39-18 | `retry send` con sobre fresco, 2026-07-12 22:15Z     | TrackId 253005150; correo SII `EPR`, informado 1, aceptado 1, sin rechazos ni reparos                                   | Flujo Maullin historico recuperado y validado realmente                |
+| B39-19 | Cierre local posterior al upload                     | El upload termino, pero el polling trataba `EPR` como transitorio                                                       | Corregido: `EPR` terminal, trazas por intento y reanudacion sin upload |
 
 Fuentes oficiales contrastadas:
 
@@ -186,43 +212,59 @@ Fuentes oficiales contrastadas:
 - [x] Firma demasiado antigua: descartado por el intento con sobre recien firmado.
 - [x] Folio ya recibido: descartado por reconciliaciones `FAU`.
 - [x] PFX ausente en custodia: descartado por rehidratacion y firma correctas.
-- [x] Maullin como transporte de boleta: descartado por contrato oficial.
+- [x] User-Agent del retry: diferencia corregida en la estrategia de
+      Certificacion y cubierta por test wire-level.
+- [ ] Diferencia de runtime Windows/host frente a Linux/Docker, incluida huella
+      TLS o tratamiento del gateway SII.
+- [ ] Proteccion temporal o rate limiting del gateway despues de varios intentos.
+- [x] Resolver la seleccion operativa sin fallback: Maullin/DTE en
+      Certificacion y Rahue/API REST en Produccion.
 - [ ] Determinar la causa del antiguo `HTTP 500` de Pangal con el contrato y la
-      trazabilidad corregidos.
+      trazabilidad corregidos. No bloquea el canal de Certificacion seleccionado.
 
 ### Siguiente secuencia controlada
 
-- [x] Corregir endpoint, token y consultas de Certificacion al contrato REST de
-      boleta, sin modificar factura ni RVD.
+- [x] Localizar y revisar los commits exactos del flujo exitoso del 2026-06-01.
+- [x] Comparar sin exponer datos los XML de los folios 31 y 34.
+- [x] Comparar localmente las cabeceras emitidas por el cliente historico y el
+      retry fallido.
 - [x] Agregar tests locales de endpoint, campos multipart, `Content-Length`,
-      cookie y consultas Apicert.
+      cookie y consultas de cada estrategia.
 - [x] Agregar al trace el detalle sanitario de endpoint, HTTP status,
       content-type y bytes cuando exista una respuesta HTTP no exitosa.
-- [x] Ejecutar regresiones locales y Docker sin contactar al SII: motor 116/116,
+- [x] Ejecutar regresiones locales y Docker sin contactar al SII: motor 120/120,
       Nest 146/146 y E2E 17/17.
-- [ ] Reconstruir la imagen `business-app-sii-acceptance:local` usada por Compose
-      antes de cualquier consulta real.
-- [ ] Ejecutar `retry reconcile` una vez mediante Apicert; no realiza upload.
-- [ ] Solo con `FAU`, preparar y validar nuevamente el folio 34.
-- [ ] Con autorizacion explicita, realizar un unico `retry send` a Pangal y
-      registrar `trackId` o diagnostico HTTP completo.
+- [x] Definir un adaptador unico de Certificacion que reproduce el contrato
+      Maullin historico y no realiza fallback.
+- [x] Incorporar el User-Agent historico y un test de contrato wire-level.
+- [x] Construir los targets Docker `acceptance` y `runtime` con las estrategias
+      separadas.
+- [x] Ejecutar `retry reconcile` con Maullin/DTE; confirmo `FAU` sin reservar
+      folios ni realizar upload.
+- [x] Con `FAU`, preparar y validar nuevamente el folio 34.
+- [x] Realizar un unico `retry send` a Maullin: trackId 253005150 y aceptacion
+      sin reparos confirmada por el SII.
+- [x] Corregir el cierre local posterior: `EPR` es terminal y cada intento de
+      polling deja una traza sanitaria.
+- [x] Permitir reanudar consultas desde un `trackId` persistido sin exigir un
+      sobre fresco ni repetir el upload.
 
 ## Estado por capacidad
 
-| Capacidad                           | Estado actual                                                        |
-| ----------------------------------- | -------------------------------------------------------------------- |
-| Custodia por emisor                 | Implementada; regresion MiniStack verde                              |
-| Token SII                           | DTE para factura/RVD; boleta REST en ambos ambientes                 |
-| Scraping CAF 39                     | Hito previo logrado                                                  |
-| Scraping CAF 33                     | Validado realmente: CAF descargado e importado en MiniStack          |
-| Boleta 39                           | REST Pangal/Rahue implementado; regresion real pendiente             |
-| Factura 33                          | Folio 17 aceptado realmente; revalidacion automatizada pendiente     |
-| QueryEstUp                          | Implementado para factura/RVD                                        |
-| QueryEstDte                         | Implementado para factura                                            |
-| Consultas de boleta                 | REST Apicert/API segun ambiente                                      |
-| Persistencia de documentos/tracking | In-memory; pendiente para produccion                                 |
-| RVD automatico                      | Pendiente                                                            |
-| XSD oficial y evidencia formal      | Pendiente                                                            |
+| Capacidad                           | Estado actual                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------- |
+| Custodia por emisor                 | Implementada; regresion MiniStack verde                                               |
+| Token SII                           | DTE para factura/RVD y boleta Certificacion; boleta REST en Produccion                |
+| Scraping CAF 39                     | Hito previo logrado                                                                   |
+| Scraping CAF 33                     | Validado realmente: CAF descargado e importado en MiniStack                           |
+| Boleta 39                           | Maullin/DTE validado realmente en Certificacion; Rahue/REST reservado para Produccion |
+| Factura 33                          | Folio 17 aceptado realmente; revalidacion automatizada pendiente                      |
+| QueryEstUp                          | Implementado para factura, RVD y boleta en Certificacion                              |
+| QueryEstDte                         | Implementado para factura                                                             |
+| Consultas de boleta                 | `QueryEstUp`/`QueryEstDte` en Certificacion; REST en Produccion                       |
+| Persistencia de documentos/tracking | In-memory; pendiente para produccion                                                  |
+| RVD automatico                      | Pendiente                                                                             |
+| XSD oficial y evidencia formal      | Pendiente                                                                             |
 
 ## Proximos hitos
 

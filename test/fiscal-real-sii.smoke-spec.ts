@@ -67,6 +67,11 @@ describe('Real SII certification flow (smoke)', () => {
   );
 
   beforeAll(async () => {
+    if (environment !== SiiEnvironment.Certificacion) {
+      throw new Error(
+        'El smoke fiscal-real-sii de boleta solo puede ejecutarse con REAL_SII_TEST_ENVIRONMENT=CERTIFICACION. Se rechazo la ejecucion antes de contactar al SII.',
+      );
+    }
     if (!rutEmisor) {
       throw new Error(
         'Falta REAL_SII_TEST_RUT_EMISOR o SII_RUT_EMISOR para las pruebas reales del SII.',
