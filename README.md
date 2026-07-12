@@ -52,18 +52,28 @@ corepack pnpm install
 
 Despues de instalar, `node_modules/sii-engine` debe apuntar a `../sii-engine`. No debe existir un directorio `business-app-sii/sii-engine`.
 
-## Desarrollo local
+## Docker local
 
 ```powershell
-pnpm run ministack:start
-pnpm run ministack:bootstrap
-pnpm run start:dev:ministack
+pnpm.cmd run docker:certification:custody
+pnpm.cmd run docker:certification:custody-check
+pnpm.cmd run docker:certification:factura33
 ```
 
-Swagger local:
+La configuracion no sensible vive en `.env`; PFX, password y API key viven en
+`secrets/`. Las pruebas reales solo se ejecutan mediante
+`compose.certification.yaml`.
+
+Produccion local:
+
+```powershell
+pnpm.cmd run docker:production:up
+```
+
+API local:
 
 ```text
-http://localhost:3002/api
+http://localhost:3000/api
 ```
 
 ## Validacion

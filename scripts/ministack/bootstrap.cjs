@@ -14,12 +14,7 @@ const {
   PutParameterCommand,
   SSMClient,
 } = require('@aws-sdk/client-ssm');
-const { loadEnvFileIntoProcess } = require('./env-file.cjs');
-
 async function main() {
-  const envFile = process.argv[2] || '.env.ministack';
-  loadEnvFileIntoProcess(envFile);
-
   const region = process.env.AWS_REGION || 'us-east-1';
   const globalEndpoint = trimToUndefined(process.env.AWS_ENDPOINT_URL);
   const ddbEndpoint =

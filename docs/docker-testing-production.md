@@ -1,6 +1,25 @@
 # Docker para certificacion y produccion
 
-Estado: propuesta aprobada, pendiente de implementacion.
+Estado: implementacion en curso.
+
+## Checklist de avance
+
+- [x] Definir una imagen multi-stage con targets `runtime` y `acceptance`.
+- [x] Mantener `sii-engine` como repositorio hermano mediante contexto relativo.
+- [x] Crear Compose compartido, de produccion y de certificacion.
+- [x] Empaquetar MiniStack con version fija y volumen persistente.
+- [x] Separar smoke con CAF custodiado de adquisicion CAF explicita.
+- [x] Montar PFX y password como Docker Secrets.
+- [x] Consolidar configuracion local no sensible en un unico `.env`.
+- [x] Validar build completo del target `runtime`.
+- [x] Validar build completo del target `acceptance`.
+- [x] Validar healthcheck y bootstrap de MiniStack en Docker.
+- [x] Ejecutar smoke de custodia dentro de Docker.
+- [x] Migrar manualmente PFX/password locales a `secrets/`.
+- [x] Ejecutar factura 33 con CAF custodiado contra SII Certificacion: folio 17 aceptado.
+- [ ] Revalidar el smoke completo de factura 33 con polling corregido.
+- [ ] Ejecutar boleta 39 con CAF custodiado contra SII Certificacion.
+- [x] Retirar runners MiniStack, loaders `.env` y comandos legacy.
 
 ## Objetivo
 
@@ -75,13 +94,46 @@ El PFX y password nunca se copian a la imagen ni se pasan como argumentos de
 build. En produccion se inyectan mediante el mecanismo de secretos del host.
 `CERTIFICACION` queda fijado en Compose y validado nuevamente por el test.
 
-## Comandos objetivo
+## Preparacion local
+
+1. Crear `.env` a partir de `.env.example` y completar solo datos no sensibles.
+2. Colocar el PFX en `secrets/certificado.pfx`.
+3. Colocar solo la password en `secrets/pfx-password.txt`.
+4. Para produccion, colocar la API key en `secrets/api-key.txt`.
+
+No se debe copiar `REAL_SII_TEST_PFX_PASSWORD` al nuevo `.env`.
+
+## Comandos disponibles
 
 ```powershell
-docker compose -f compose.yaml -f compose.certification.yaml run --rm acceptance
-docker compose -f compose.yaml -f compose.certification.yaml run --rm caf-acquisition
-docker compose -f compose.yaml -f compose.production.yaml up -d
+pnpm run docker:build
+pnpm run docker:certification:custody
+pnpm run docker:certification:custody-check
+pnpm run docker:certification:factura33
+pnpm run docker:certification:boleta39
+pnpm run docker:certification:caf33
+pnpm run docker:production:up
 ```
+
+`factura33` y `boleta39` usan solo CAF custodiado. `caf33` es la unica de estas
+operaciones autorizada para solicitar un CAF nuevo.
+
+## Validacion realizada
+
+El 2026-07-11 se verifico sin contactar al SII:
+
+- build Linux de `runtime` y `acceptance`
+- runtime productivo saludable como usuario `pwuser` y sin Jest
+- Chromium Playwright funcionando en modo headless
+- MiniStack 1.3.54 saludable con estado persistente
+- bootstrap idempotente de S3, DynamoDB y SSM
+- smoke de custodia: 1 suite y 1 test aprobados
+
+El 2026-07-12 se verifico contra SII Certificacion:
+
+- adquisicion CAF 33 y persistencia en custodia Docker
+- factura 33 folio 17 aceptada por SII
+- el smoke detecto un falso negativo por consultar mientras el SII aun procesaba el envio; se incorporo polling acotado sin relajar rechazos ni reparos
 
 ## Criterios de cierre
 
@@ -97,9 +149,9 @@ docker compose -f compose.yaml -f compose.production.yaml up -d
 
 1. Crear Dockerfile multi-stage y los tres archivos Compose.
 2. Incorporar healthchecks, usuario no root y manejo de `SIGTERM`.
-3. Migrar secretos desde `.env.real-sii-tests` a `secrets/`.
+3. Migrar secretos a `secrets/`.
 4. Validar custodia, boleta 39 y factura 33 en el nuevo flujo.
 5. Retirar los runners MiniStack y loaders `.env` antiguos.
 
-Los scripts MiniStack actuales se mantienen solo hasta completar los pasos 1 a
-4, para no interrumpir las pruebas reales existentes.
+La migracion esta completa: `bootstrap.cjs` recibe solo variables inyectadas por
+Compose y no existe una ruta de ejecucion basada en archivos `.env` legacy.

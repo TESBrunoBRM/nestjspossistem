@@ -2,6 +2,8 @@ import {
   assertExpectedSendStatus,
   assertNormalSmokeDteStatus,
   assertNormalSmokeSendStatus,
+  shouldRetryNormalSmokeDteStatus,
+  shouldRetryNormalSmokeSendStatus,
 } from '../../test/support/sii-smoke-assertions';
 
 describe('SII real smoke assertions', () => {
@@ -64,4 +66,24 @@ describe('SII real smoke assertions', () => {
       assertExpectedSendStatus('SOK', 'RCH', 'smoke de rechazo'),
     ).toThrow('esperaba explicitamente RCH');
   });
+
+  it('retries only an unavailable send status', () => {
+    expect(shouldRetryNormalSmokeSendStatus('UNKNOWN')).toBe(true);
+    expect(shouldRetryNormalSmokeSendStatus('SOK')).toBe(false);
+    expect(shouldRetryNormalSmokeSendStatus('RCH')).toBe(false);
+  });
+
+  it.each(['FAU', 'EMP', 'TMD', 'TMC', 'UNKNOWN'])(
+    'retries pending DTE status %s',
+    (status) => {
+      expect(shouldRetryNormalSmokeDteStatus(status)).toBe(true);
+    },
+  );
+
+  it.each(['DOK', 'AND', 'ANC', 'DNK', 'FNA', 'MMD'])(
+    'does not retry accepted or definitive DTE status %s',
+    (status) => {
+      expect(shouldRetryNormalSmokeDteStatus(status)).toBe(false);
+    },
+  );
 });

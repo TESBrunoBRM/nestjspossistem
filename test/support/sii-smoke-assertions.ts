@@ -7,6 +7,18 @@ import {
 
 const ACCEPTABLE_DTE_STATUSES = new Set<DteStatus>(['DOK', 'AND', 'ANC']);
 
+export function shouldRetryNormalSmokeSendStatus(status: string): boolean {
+  return status.trim().toUpperCase() === 'UNKNOWN';
+}
+
+export function shouldRetryNormalSmokeDteStatus(status: string): boolean {
+  const normalized = status.trim().toUpperCase() as DteStatus;
+  if (ACCEPTABLE_DTE_STATUSES.has(normalized)) return false;
+
+  const info = DTE_STATES[normalized];
+  return !info || (!info.isError && !info.requiresRemediation);
+}
+
 export function assertNormalSmokeSendStatus(
   status: string,
   stage: string,

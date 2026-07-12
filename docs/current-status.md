@@ -1,7 +1,7 @@
 # Estado tecnico de business-app-sii
 
 Estado: fuente canonica
-Actualizado: 2026-07-10
+Actualizado: 2026-07-12
 
 Este documento contiene solo avances, validaciones y pendientes propios de `business-app-sii` y su motor `sii-engine`. La arquitectura comercial y la integracion con `business_app_back` se mantienen en [business_app_back/docs/sii-integration-proposal.md](../../business_app_back/docs/sii-integration-proposal.md).
 
@@ -9,9 +9,11 @@ Este documento contiene solo avances, validaciones y pendientes propios de `busi
 
 La plataforma ya tiene implementacion para custodia fiscal por emisor, obtencion/importacion de CAF, boleta 39, factura 33, consultas de envio y consulta DTE. El 2026-07-10 se elimino la copia de `sii-engine` que estaba dentro de este repositorio; el unico motor canonico es ahora el repositorio hermano `../sii-engine`.
 
-El motor separado y `business-app-sii` pasan typecheck. El motor pasa 104 tests, la aplicacion pasa 115 unit tests y 17 E2E, y MiniStack valida custodia persistente en S3, DynamoDB y SSM. Los fixtures CAF usan vigencia relativa y los smokes normales rechazan errores, reparos, estados desconocidos y estados DTE inconclusos.
+El motor separado y `business-app-sii` pasan typecheck. El motor pasa 105 tests, la aplicacion pasa 127 unit tests y 17 E2E, y MiniStack valida custodia persistente en S3, DynamoDB y SSM. Los fixtures CAF usan vigencia relativa y los smokes normales rechazan errores, reparos, estados desconocidos y estados DTE inconclusos.
 
-Factura 33 todavia no puede declararse validada de extremo a extremo. La ultima ejecucion realizada por el desarrollador llego a certificacion, valido PFX/token, descargo e importo un CAF 33 y construyo la factura. El upload termino con `ECONNRESET`. El CAF contenia un solo folio, reservado antes del upload; el preflight posterior confirmo el rango custodiado como agotado. No se revierte porque el SII pudo haber recibido el sobre pese al corte de socket.
+Factura 33 ya alcanzo aceptacion real en SII Certificacion desde el entorno Docker. El flujo valido PFX/token, adquirio y custodio CAF 33, emitio el folio 17 y recibio `trackId`; el correo posterior del SII confirmo la factura aceptada. El smoke original dio un falso negativo porque consulto a los cinco segundos: `QueryEstUp` aun respondia `ERR_CODE=2` y `QueryEstDte` informaba `FAU - DTE No Recibido` mientras el envio seguia procesandose.
+
+El smoke fue corregido para reintentar solo estados pendientes dentro de un timeout acotado. Rechazos, reparos y errores definitivos siguen fallando inmediatamente, y las estadisticas publicas de rechazados/reparos ya no se pierden en la capa de polling. Falta una nueva ejecucion real para cerrar la regresion automatizada corregida; no se debe reenviar el folio 17.
 
 Para recuperar cualquier folio ya reservado existe un smoke parametrizado que reenvia su mismo `signed-envio-dte-attempt.xml`, no toca `nextFolio` y persiste el `trackId` para reanudar solo las consultas en ejecuciones posteriores. Tambien cuenta con validacion offline previa. El folio 16 fue recuperado exitosamente y obtuvo `trackId`; el SII lo acepto con reparo leve porque el smoke historico habia usado una razon social placeholder.
 
@@ -57,7 +59,7 @@ Estos hitos historicos no reemplazan una regresion verde en la fecha actual.
 - `pnpm-workspace.yaml`, el lockfile y `node_modules/sii-engine` apuntan a `../sii-engine`
 - se conservaron en el motor canonico los aportes utiles de la copia: DTE 46/52, multipart legacy, parser `RECEPCIONDTE` y contrato oficial `getEstDte`
 - se conservaron las defensas mas completas del repositorio separado: ISO-8859-1, parsing de `FRMA`, parsers de respuesta, polling, sanitizacion y registro de schemas
-- el motor independiente pasa 21 archivos de prueba y 104 tests
+- el motor independiente pasa 21 archivos de prueba y 105 tests
 - `business-app-sii` pasa `tsc --noEmit` y `nest build` consumiendo el repositorio separado
 
 ## Auditoria de pruebas del 2026-07-09
@@ -84,7 +86,7 @@ Los CAF sinteticos ahora usan el dia anterior a la ejecucion y los certificados 
 
 #### Resuelto: topologia y cobertura del motor
 
-El workspace usa exclusivamente `../sii-engine`; `node_modules/sii-engine` fue verificado contra esa ruta y ya no existe un motor dentro de `business-app-sii`. La suite propia del motor cubre CAF, TED, Latin-1, XMLDSig, transportes y parsers SII con 104 tests aprobados.
+El workspace usa exclusivamente `../sii-engine`; `node_modules/sii-engine` fue verificado contra esa ruta y ya no existe un motor dentro de `business-app-sii`. La suite propia del motor cubre CAF, TED, Latin-1, XMLDSig, transportes y parsers SII con 105 tests aprobados.
 
 El typecheck general tambien esta verde despues de alinear los contratos entre ambos repositorios. CI debe conservar como gate la verificacion del destino del enlace para impedir que se reintroduzca una copia local.
 
@@ -102,7 +104,7 @@ La adquisicion CAF tiene un timeout total propio de 180 segundos por defecto y u
 
 ### Riesgos de implementacion pendientes
 
-El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos `FRMA` con atributos y tiene pruebas especificas para ambos casos. Permanecen pendientes la validacion XSD oficial, golden fixtures completos de factura, evidencia de aceptacion tributaria real con datos acentuados y una imagen Linux que instale Chromium Playwright con sus dependencias de sistema.
+El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos `FRMA` con atributos y tiene pruebas especificas para ambos casos. La imagen Linux con Chromium Playwright ya fue construida y validada headless. Permanecen pendientes la validacion XSD oficial, golden fixtures completos de factura, evidencia con datos acentuados y una regresion real verde del polling corregido.
 
 ## Resultados ejecutados
 
@@ -111,15 +113,16 @@ El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos 
 | Build por script Corepack                      | Fallo de entorno                    | `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` en el shim local                                       |
 | Build JS directo del `sii-engine` separado     | Paso                                | CJS, ESM y declaraciones generados correctamente                                                |
 | Typecheck aislado `sii-engine`                 | Paso                                | El source del motor compila                                                                     |
-| Tests `sii-engine`                             | 21 archivos, 104 tests: todos pasan | Incluye `RLV`, reparo singular y los casos migrados desde la copia eliminada                    |
+| Tests `sii-engine`                             | 21 archivos, 105 tests: todos pasan | Incluye polling con estadisticas, `RLV`, reparo singular y casos migrados                       |
 | Typecheck general `business-app-sii`           | Paso                                | Resuelve tipos desde `../sii-engine`                                                            |
 | Build `business-app-sii`                       | Paso                                | Nest compila consumiendo el motor separado                                                      |
-| Unit tests Nest contra motor separado          | 17/17 suites; 115/115 tests pasan   | Incluye `EPR` con reparos, cantidad CAF adaptativa, timeout, runtime headless y reobtencion CAF |
+| Unit tests Nest contra motor separado          | 17/17 suites; 127/127 tests pasan   | Incluye polling transitorio, `EPR` con reparos, cantidad CAF adaptativa y runtime headless      |
 | E2E interno                                    | 2/2 suites; 17/17 tests pasan       | Incluye limite CAF de 50, POST de factura 33 y emisiones aisladas por caso                      |
 | Bootstrap MiniStack                            | Paso                                | S3, DynamoDB y SSM creados/verificados                                                          |
 | Smoke custody MiniStack                        | Paso                                | PFX/password/CAF persisten entre reinicios y permiten reservar folio                            |
-| Smoke factura 33 con CAF existente             | Bloqueado                           | Preflight custody-only: CAF 33 custodiado agotado tras reservar el folio del upload fallido     |
-| Smoke factura 33 completo contra certificacion | Avance parcial                      | CAF descargado/importado; upload fallo con `ECONNRESET` antes de obtener `trackId`              |
+| Smoke factura 33 con CAF existente             | Paso                                | CAF 33 adquirido, persistido y reutilizado desde MiniStack Docker                               |
+| Factura 33 real contra certificacion            | Aceptada por SII                    | Folio 17 aceptado; el smoke original dio falso negativo por estado transitorio                  |
+| Polling corregido de factura 33                 | Unitarios verdes; regresion pendiente | Reintenta `UNKNOWN`/`FAU` transitorios y conserva estadisticas de rechazo/reparo               |
 
 ## Estado por capacidad
 
@@ -130,7 +133,7 @@ El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos 
 | Scraping CAF 39                     | Hito previo logrado                                         |
 | Scraping CAF 33                     | Validado realmente: CAF descargado e importado en MiniStack |
 | Boleta 39                           | Hito real previo; unitarios y E2E verdes                    |
-| Factura 33                          | Codigo implementado; validacion real actual no cerrada      |
+| Factura 33                          | Folio 17 aceptado realmente; revalidacion automatizada pendiente |
 | QueryEstUp                          | Implementado y con tests de transporte mockeado             |
 | QueryEstDte                         | Implementado y con test de transporte mockeado              |
 | Persistencia de documentos/tracking | In-memory; pendiente para produccion                        |

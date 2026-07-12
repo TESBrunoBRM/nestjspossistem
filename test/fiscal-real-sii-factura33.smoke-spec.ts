@@ -16,6 +16,8 @@ import { optionalEnv, prepareRealSiiTestEnv } from './support/env-loader';
 import {
   assertNormalSmokeDteStatus,
   assertNormalSmokeSendStatus,
+  shouldRetryNormalSmokeDteStatus,
+  shouldRetryNormalSmokeSendStatus,
 } from './support/sii-smoke-assertions';
 
 prepareRealSiiTestEnv();
@@ -73,6 +75,12 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
   const statusSettleDelayMs = Number(
     optionalEnv('REAL_SII_TEST_STATUS_SETTLE_MS') || '5000',
   );
+  const statusPollTimeoutMs = Number(
+    optionalEnv('REAL_SII_TEST_STATUS_POLL_TIMEOUT_MS') || '120000',
+  );
+  const statusPollIntervalMs = Number(
+    optionalEnv('REAL_SII_TEST_STATUS_POLL_INTERVAL_MS') || '10000',
+  );
 
   beforeAll(async () => {
     smokeLog('Validando precondiciones locales');
@@ -118,6 +126,7 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
       );
     }
     assertValidSettleDelay(statusSettleDelayMs);
+    assertValidPollingConfig(statusPollTimeoutMs, statusPollIntervalMs);
     if (existingCaf33Path && !existsSync(existingCaf33Path)) {
       throw new Error(
         `REAL_SII_TEST_FACTURA33_CAF_PATH apunta a un archivo inexistente: ${existingCaf33Path}`,
@@ -397,10 +406,12 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
     );
     await delay(statusSettleDelayMs);
 
-    const response = await runWithHeartbeat(
-      'Consultando estado de envio en SII',
-      () =>
-        request(testServer(app))
+    const statusResult = await pollSmokeResult({
+      label: 'Consultando estado de envio en SII',
+      timeoutMs: statusPollTimeoutMs,
+      intervalMs: statusPollIntervalMs,
+      query: async () => {
+        const response = await request(testServer(app))
           .get(`/api/fiscal/documents/${emitted.internalId}/status`)
           .set('x-api-key', apiKey)
           .query({
@@ -408,16 +419,27 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
             rutEmisor,
             environment,
           })
-          .expect(200),
-    );
+          .expect(200);
+        return {
+          data: responseData<SendStatusApiData>(response),
+          publicBody: response.body,
+        };
+      },
+      shouldRetry: (result) =>
+        shouldRetryNormalSmokeSendStatus(result.data.normalizedStatus),
+      status: (result) => result.data.normalizedStatus,
+    });
 
-    const statusData = responseData<SendStatusApiData>(response);
+    const statusData = statusResult.data;
     expect(statusData.trackId).toBe(emitted.trackId);
-    expect(JSON.stringify(response.body)).not.toMatch(secretLeakPattern());
+    expect(JSON.stringify(statusResult.publicBody)).not.toMatch(
+      secretLeakPattern(),
+    );
     assertNormalSmokeSendStatus(
       statusData.normalizedStatus,
       'Consulta de envio de factura 33',
       statusData.detail,
+      statusData.statistics,
     );
     smokeLog(`Estado de envio aceptable: ${statusData.normalizedStatus}`);
   });
@@ -429,10 +451,12 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
       blocker: factura33EmissionBlocker ?? factura33PreconditionBlocker,
     });
 
-    const dteStatusResponse = await runWithHeartbeat(
-      'Consultando estado tributario del DTE 33',
-      () =>
-        request(testServer(app))
+    const dteStatusResult = await pollSmokeResult({
+      label: 'Consultando estado tributario del DTE 33',
+      timeoutMs: statusPollTimeoutMs,
+      intervalMs: statusPollIntervalMs,
+      query: async () => {
+        const response = await request(testServer(app))
           .get(`/api/fiscal/documents/${emitted.internalId}/dte-status`)
           .set('x-api-key', apiKey)
           .query({
@@ -440,13 +464,21 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
             rutEmisor,
             environment,
           })
-          .expect(200),
-    );
+          .expect(200);
+        return {
+          data: responseData<DteStatusApiData>(response),
+          publicBody: response.body,
+        };
+      },
+      shouldRetry: (result) =>
+        shouldRetryNormalSmokeDteStatus(result.data.status),
+      status: (result) => result.data.status,
+    });
 
-    const dteStatusData = responseData<DteStatusApiData>(dteStatusResponse);
+    const dteStatusData = dteStatusResult.data;
     expect(dteStatusData.tipoDTE).toBe(TipoDTE.FacturaElectronica);
     expect(dteStatusData.folio).toBeGreaterThan(0);
-    expect(JSON.stringify(dteStatusResponse.body)).not.toMatch(
+    expect(JSON.stringify(dteStatusResult.publicBody)).not.toMatch(
       secretLeakPattern(),
     );
     assertNormalSmokeDteStatus(
@@ -493,6 +525,7 @@ interface SendStatusApiData {
   trackId: string;
   normalizedStatus: string;
   detail?: string;
+  statistics?: { rechazados?: number; reparos?: number };
 }
 
 interface DteStatusApiData {
@@ -762,6 +795,59 @@ function assertValidSettleDelay(value: number): void {
     throw new Error(
       `REAL_SII_TEST_STATUS_SETTLE_MS es invalido (${String(value)}). Debe ser un entero entre 0 y 60000.`,
     );
+  }
+}
+
+function assertValidPollingConfig(timeoutMs: number, intervalMs: number): void {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 10_000 || timeoutMs > 300_000) {
+    throw new Error(
+      `REAL_SII_TEST_STATUS_POLL_TIMEOUT_MS es invalido (${String(timeoutMs)}). Debe ser un entero entre 10000 y 300000.`,
+    );
+  }
+  if (
+    !Number.isInteger(intervalMs) ||
+    intervalMs < 1_000 ||
+    intervalMs > 60_000 ||
+    intervalMs > timeoutMs
+  ) {
+    throw new Error(
+      `REAL_SII_TEST_STATUS_POLL_INTERVAL_MS es invalido (${String(intervalMs)}). Debe ser un entero entre 1000 y 60000 y no superar el timeout.`,
+    );
+  }
+}
+
+async function pollSmokeResult<T>(input: {
+  label: string;
+  timeoutMs: number;
+  intervalMs: number;
+  query: () => Promise<T>;
+  shouldRetry: (result: T) => boolean;
+  status: (result: T) => string;
+}): Promise<T> {
+  const startedAt = Date.now();
+  let attempt = 0;
+
+  while (true) {
+    attempt += 1;
+    const result = await runWithHeartbeat(
+      `${input.label} (intento ${attempt})`,
+      input.query,
+    );
+    if (!input.shouldRetry(result)) return result;
+
+    const remainingMs = input.timeoutMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) {
+      smokeLog(
+        `${input.label}: se agoto la espera con estado ${input.status(result)}`,
+      );
+      return result;
+    }
+
+    const waitMs = Math.min(input.intervalMs, remainingMs);
+    smokeLog(
+      `${input.label}: estado ${input.status(result)} aun pendiente; reintento en ${waitMs} ms`,
+    );
+    await delay(waitMs);
   }
 }
 
