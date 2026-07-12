@@ -1,7 +1,7 @@
 x-ministack-environment: &ministack-environment
   AWS_ACCESS_KEY_ID: test
   AWS_SECRET_ACCESS_KEY: test
-  AWS_EC2_METADATA_DISABLED: "true"
+  AWS_EC2_METADATA_DISABLED: 'true'
   AWS_REGION: us-east-1
   AWS_ENDPOINT_URL: http://ministack:4566
   AWS_FISCAL_DDB_TABLE: business-app-sii-fiscal
@@ -9,7 +9,7 @@ x-ministack-environment: &ministack-environment
   AWS_FISCAL_S3_BUCKET: business-app-sii-fiscal
   AWS_FISCAL_S3_ENDPOINT: http://ministack:4566
   AWS_FISCAL_S3_PREFIX: fiscal-custody
-  AWS_FISCAL_S3_FORCE_PATH_STYLE: "true"
+  AWS_FISCAL_S3_FORCE_PATH_STYLE: 'true'
   AWS_FISCAL_SSM_ENDPOINT: http://ministack:4566
   AWS_FISCAL_SSM_PREFIX: /business-app-sii/fiscal
 
@@ -29,12 +29,12 @@ x-certification-environment: &certification-environment
   REAL_SII_TEST_STATUS_POLL_INTERVAL_MS: ${SII_CERT_POLL_INTERVAL_MS:-10000}
   REAL_SII_TEST_FACTURA33_TENANT_ID: ${SII_CERT_FACTURA33_TENANT_ID:-certification-factura33}
   REAL_SII_TEST_TENANT_ID: ${SII_CERT_BOLETA39_TENANT_ID:-certification-boleta39}
-  SII_PORTAL_CAF_AUTOMATION_ENABLED: "true"
-  SII_PORTAL_HTTP_SCRAPING_ENABLED: "true"
-  SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED: "true"
-  SII_PORTAL_CERT_LOGIN_ENABLED: "true"
-  SII_PORTAL_HEADLESS: "true"
-  SII_PORTAL_PROGRESS_LOG_ENABLED: "true"
+  SII_PORTAL_CAF_AUTOMATION_ENABLED: 'true'
+  SII_PORTAL_HTTP_SCRAPING_ENABLED: 'true'
+  SII_PORTAL_PLAYWRIGHT_FALLBACK_ENABLED: 'true'
+  SII_PORTAL_CERT_LOGIN_ENABLED: 'true'
+  SII_PORTAL_HEADLESS: 'true'
+  SII_PORTAL_PROGRESS_LOG_ENABLED: 'true'
 
 x-acceptance-service: &acceptance-service
   image: business-app-sii-acceptance:${APP_IMAGE_TAG:-local}
@@ -75,7 +75,7 @@ services:
         MINISTACK_VERSION: 1.3.54
     environment:
       MINISTACK_REGION: us-east-1
-      PERSIST_STATE: "1"
+      PERSIST_STATE: '1'
       STATE_DIR: /var/lib/ministack
     volumes:
       - ministack-state:/var/lib/ministack
@@ -121,13 +121,13 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  acceptance:
+  emit-factura33:
     <<: *acceptance-service
     command:
       - node
       - scripts/real-sii/test-existing-caf-factura33.cjs
 
-  acceptance-boleta39:
+  emit-boleta39:
     <<: *acceptance-service
     command:
       - node
@@ -143,13 +143,19 @@ services:
       - ./test/jest-smoke.json
       - --runInBand
       - --verbose
-      - ./test/fiscal-real-sii-caf33.smoke-spec.ts
+      - ./test/fiscal-real-sii-caf.smoke-spec.ts
 
-  custody-check:
+  caf-check:
     <<: *acceptance-service
     command:
       - node
-      - scripts/real-sii/check-custodied-caf-factura33.cjs
+      - --experimental-vm-modules
+      - node_modules/jest/bin/jest.js
+      - --config
+      - ./test/jest-smoke.json
+      - --runInBand
+      - --verbose
+      - ./test/fiscal-real-sii-caf-check.smoke-spec.ts
 
   custody-test:
     image: business-app-sii-acceptance:${APP_IMAGE_TAG:-local}

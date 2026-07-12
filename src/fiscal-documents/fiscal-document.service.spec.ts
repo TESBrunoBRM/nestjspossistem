@@ -59,9 +59,9 @@ const generatedCert = createTestCert();
 const mockBoletaSend = jest.fn();
 const mockBoletaQueryStatus = jest.fn();
 const mockBoletaSendRvd = jest.fn();
-const mockLegacySend = jest.fn();
-const mockLegacyQueryStatus = jest.fn();
-const mockLegacyQueryDteStatus = jest.fn();
+const mockDteSend = jest.fn();
+const mockDteQueryStatus = jest.fn();
+const mockDteQueryDteStatus = jest.fn();
 
 // Mock the Sii Clients from sii-engine
 jest.mock('sii-engine', () => {
@@ -73,10 +73,10 @@ jest.mock('sii-engine', () => {
       queryStatus: mockBoletaQueryStatus,
       sendRvd: mockBoletaSendRvd,
     })),
-    LegacySiiClient: jest.fn().mockImplementation(() => ({
-      send: mockLegacySend,
-      queryStatus: mockLegacyQueryStatus,
-      queryDteStatus: mockLegacyQueryDteStatus,
+    DteSiiClient: jest.fn().mockImplementation(() => ({
+      send: mockDteSend,
+      queryStatus: mockDteQueryStatus,
+      queryDteStatus: mockDteQueryDteStatus,
     })),
   };
 });
@@ -127,17 +127,17 @@ describe('Fiscal Services with Mock Transport', () => {
       status: 'EPR',
       rawResponse: '<xml>mock</xml>',
     });
-    mockLegacyQueryStatus.mockReset().mockResolvedValue({
+    mockDteQueryStatus.mockReset().mockResolvedValue({
       trackId: 'mock-track-123',
       status: 'SOK',
       rawResponse: '<xml>mock</xml>',
     });
-    mockLegacySend.mockReset().mockResolvedValue({
-      trackId: 'mock-legacy-track-333',
+    mockDteSend.mockReset().mockResolvedValue({
+      trackId: 'mock-dte-track-333',
       status: 'EPR',
       rawResponse: '<xml>mock</xml>',
     });
-    mockLegacyQueryDteStatus.mockReset().mockResolvedValue({
+    mockDteQueryDteStatus.mockReset().mockResolvedValue({
       tipoDTE: TipoDTE.FacturaElectronica,
       folio: 100,
       rutEmisor: '11111111-1',
@@ -192,6 +192,7 @@ describe('Fiscal Services with Mock Transport', () => {
           provide: FiscalTokenProvider,
           useValue: {
             getToken: jest.fn().mockResolvedValue(mockToken),
+            getBoletaToken: jest.fn().mockResolvedValue(mockToken),
           },
         },
         {
@@ -462,13 +463,13 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(updated?.status).toBe('SOK');
     });
 
-    it('emits factura 33 through legacy EnvioDTE and stores public result', async () => {
+    it('emits factura 33 through EnvioDTE and stores public result', async () => {
       await folioProvider.addCafXml(
         context,
         cafXml('11111111-1', 100, 110, TipoDTE.FacturaElectronica),
       );
 
-      const result = await docService.emitirLegacyDte(
+      const result = await docService.emitirDte(
         {
           context: {
             fechaResolucion: '2020-01-01',
@@ -517,17 +518,17 @@ describe('Fiscal Services with Mock Transport', () => {
 
       expect(result.internalId).toBeDefined();
       expect(result.folio).toBe(100);
-      expect(result.trackId).toBe('mock-legacy-track-333');
-      expect(mockLegacySend).toHaveBeenCalledWith(
+      expect(result.trackId).toBe('mock-dte-track-333');
+      expect(mockDteSend).toHaveBeenCalledWith(
         expect.stringContaining('<EnvioDTE'),
         expect.objectContaining({ rutEmisor: '11111111-1' }),
         'mocktoken123',
         mockCert.rutFirmante,
       );
-      const legacySendCalls = mockLegacySend.mock.calls as Array<
+      const dteSendCalls = mockDteSend.mock.calls as Array<
         [string, ...unknown[]]
       >;
-      const signedEnvelope = String(legacySendCalls[0]?.[0] ?? '');
+      const signedEnvelope = String(dteSendCalls[0]?.[0] ?? '');
       expect(signedEnvelope).toContain('<SetDTE ID="SetDoc">');
       expect(signedEnvelope).toMatch(
         /<DTE(?: xmlns="http:\/\/www\.sii\.cl\/SiiDte")? version="1\.0">/,
@@ -582,13 +583,13 @@ describe('Fiscal Services with Mock Transport', () => {
       );
     });
 
-    it('emits factura de compra 46 through legacy EnvioDTE', async () => {
+    it('emits factura de compra 46 through EnvioDTE', async () => {
       await folioProvider.addCafXml(
         context,
         cafXml('11111111-1', 200, 210, TipoDTE.FacturaCompraElectronica),
       );
 
-      const result = await docService.emitirLegacyDte(
+      const result = await docService.emitirDte(
         {
           context: {
             fechaResolucion: '2020-01-01',
@@ -636,10 +637,10 @@ describe('Fiscal Services with Mock Transport', () => {
       );
 
       expect(result.folio).toBe(200);
-      const legacySendCalls = mockLegacySend.mock.calls as Array<
+      const dteSendCalls = mockDteSend.mock.calls as Array<
         [string, ...unknown[]]
       >;
-      const signedEnvelope = String(legacySendCalls.at(-1)?.[0] ?? '');
+      const signedEnvelope = String(dteSendCalls.at(-1)?.[0] ?? '');
       expect(signedEnvelope).toContain('<TipoDTE>46</TipoDTE>');
       expect(JSON.stringify(result)).not.toContain('rawResponse');
     });
@@ -650,7 +651,7 @@ describe('Fiscal Services with Mock Transport', () => {
         cafXml('11111111-1', 300, 310, TipoDTE.GuiaDespachoElectronica),
       );
 
-      const result = await docService.emitirLegacyDte(
+      const result = await docService.emitirDte(
         {
           context: {
             fechaResolucion: '2020-01-01',
@@ -696,10 +697,10 @@ describe('Fiscal Services with Mock Transport', () => {
       );
 
       expect(result.folio).toBe(300);
-      const legacySendCalls = mockLegacySend.mock.calls as Array<
+      const dteSendCalls = mockDteSend.mock.calls as Array<
         [string, ...unknown[]]
       >;
-      const signedEnvelope = String(legacySendCalls.at(-1)?.[0] ?? '');
+      const signedEnvelope = String(dteSendCalls.at(-1)?.[0] ?? '');
       expect(signedEnvelope).toContain('<TipoDTE>52</TipoDTE>');
       expect(signedEnvelope).toContain('<IndTraslado>5</IndTraslado>');
       expect(JSON.stringify(result)).not.toContain('rawResponse');
@@ -707,7 +708,7 @@ describe('Fiscal Services with Mock Transport', () => {
 
     it('rejects guia de despacho 52 without indTraslado', async () => {
       await expect(
-        docService.emitirLegacyDte(
+        docService.emitirDte(
           {
             document: {
               idDoc: {
@@ -737,7 +738,7 @@ describe('Fiscal Services with Mock Transport', () => {
 
     it('rejects nota de credito 61 without mandatory reference', async () => {
       await expect(
-        docService.emitirLegacyDte(
+        docService.emitirDte(
           {
             document: {
               idDoc: {
@@ -763,7 +764,7 @@ describe('Fiscal Services with Mock Transport', () => {
           TipoDTE.NotaCredito,
         ),
       ).rejects.toThrow('requieren al menos una referencia');
-      expect(mockLegacySend).not.toHaveBeenCalled();
+      expect(mockDteSend).not.toHaveBeenCalled();
     });
 
     it('can create edge provision from valid parameters', async () => {

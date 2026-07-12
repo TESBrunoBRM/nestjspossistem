@@ -42,11 +42,11 @@ jest.mock('sii-engine', () => {
         rawResponse: '<xml>mock</xml>',
       }),
     })),
-    LegacySiiClient: jest.fn().mockImplementation(() => ({
+    DteSiiClient: jest.fn().mockImplementation(() => ({
       send: jest.fn().mockResolvedValue({
         trackId: 'e2e-factura-track-333',
         status: 'SOK',
-        rawResponse: '<xml>mock legacy send</xml>',
+        rawResponse: '<xml>mock dte send</xml>',
       }),
       queryStatus: jest.fn().mockResolvedValue({
         trackId: 'e2e-track-123',
@@ -118,6 +118,11 @@ describe('FiscalController (e2e)', () => {
       .useValue({
         getToken: jest.fn().mockResolvedValue({
           token: 'mock-e2e-token-abc',
+          obtainedAt: new Date(),
+          environment: SiiEnvironment.Certificacion,
+        }),
+        getBoletaToken: jest.fn().mockResolvedValue({
+          token: 'mock-e2e-boleta-token-abc',
           obtainedAt: new Date(),
           environment: SiiEnvironment.Certificacion,
         }),
@@ -383,7 +388,7 @@ describe('FiscalController (e2e)', () => {
       .expect(400);
   });
 
-  it('POST /api/fiscal/documents/facturas emits factura 33 through the legacy transport', async () => {
+  it('POST /api/fiscal/documents/facturas emits factura 33 through the DTE transport', async () => {
     await request(app.getHttpServer())
       .post('/api/fiscal/folios/cafs')
       .set('x-api-key', 'test-api-key')

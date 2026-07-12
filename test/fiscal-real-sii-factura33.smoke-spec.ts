@@ -10,7 +10,12 @@ import { FISCAL_CAF_ACQUISITION_PROVIDER } from '../src/fiscal-caf-acquisition/f
 import { FiscalDocumentRepository } from '../src/fiscal-documents/fiscal-document.repository';
 import { loadCertificateMaterialFromP12 } from '../src/fiscal/fiscal-certificate.util';
 import { resolveProjectPath } from '../src/common/utils/project-path.util';
-import { LegacySiiClient, SiiEnvironment, TipoDTE } from 'sii-engine';
+import {
+  DteSiiClient,
+  formatSiiDate,
+  SiiEnvironment,
+  TipoDTE,
+} from 'sii-engine';
 import { createFiscalTestApp } from './support/nest-test-app';
 import { optionalEnv, prepareRealSiiTestEnv } from './support/env-loader';
 import {
@@ -269,8 +274,8 @@ describe('Real SII certification flow for factura 33 (smoke)', () => {
       },
     });
 
-    const today = new Date().toISOString().slice(0, 10);
-    const sendSpy = captureLegacyUploadAttempts();
+    const today = formatSiiDate();
+    const sendSpy = captureDteUploadAttempts();
     let response: Response;
     try {
       response = await runWithHeartbeat(
@@ -799,7 +804,11 @@ function assertValidSettleDelay(value: number): void {
 }
 
 function assertValidPollingConfig(timeoutMs: number, intervalMs: number): void {
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 10_000 || timeoutMs > 300_000) {
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 10_000 ||
+    timeoutMs > 300_000
+  ) {
     throw new Error(
       `REAL_SII_TEST_STATUS_POLL_TIMEOUT_MS es invalido (${String(timeoutMs)}). Debe ser un entero entre 10000 y 300000.`,
     );
@@ -910,34 +919,34 @@ function resolveOptionalRealSiiTestCaf33Path(): string | undefined {
   return configuredPath ? resolveProjectPath(configuredPath) : undefined;
 }
 
-type LegacySend = (
-  ...args: Parameters<LegacySiiClient['send']>
-) => ReturnType<LegacySiiClient['send']>;
+type DteSend = (
+  ...args: Parameters<DteSiiClient['send']>
+) => ReturnType<DteSiiClient['send']>;
 
-function captureLegacyUploadAttempts(): jest.SpyInstance {
+function captureDteUploadAttempts(): jest.SpyInstance {
   const originalSendCandidate: unknown = Object.getOwnPropertyDescriptor(
-    LegacySiiClient.prototype,
+    DteSiiClient.prototype,
     'send',
   )?.value;
 
   if (typeof originalSendCandidate !== 'function') {
-    throw new Error('No se pudo capturar LegacySiiClient.send original.');
+    throw new Error('No se pudo capturar DteSiiClient.send original.');
   }
 
-  const originalSend = originalSendCandidate as LegacySend;
+  const originalSend = originalSendCandidate as DteSend;
 
   return jest
-    .spyOn(LegacySiiClient.prototype, 'send')
+    .spyOn(DteSiiClient.prototype, 'send')
     .mockImplementation(async function (
-      this: LegacySiiClient,
-      ...params: Parameters<LegacySiiClient['send']>
+      this: DteSiiClient,
+      ...params: Parameters<DteSiiClient['send']>
     ) {
       const [signedEnvelope] = params;
       writeUploadAttemptArtifacts(signedEnvelope);
       try {
         return await originalSend.apply(this, params);
       } catch (error) {
-        writeLegacyUploadFailureArtifacts(error);
+        writeDteUploadFailureArtifacts(error);
         throw error;
       }
     });
@@ -966,7 +975,7 @@ function writeUploadAttemptArtifacts(signedEnvelope: string): void {
   }
 }
 
-function writeLegacyUploadFailureArtifacts(error: unknown): void {
+function writeDteUploadFailureArtifacts(error: unknown): void {
   const artifactDir = resolveProjectPath(
     'secure/real-sii-tests/artifacts/factura33/last-failed-upload',
   );

@@ -63,6 +63,10 @@ FROM build AS acceptance
 ENV NODE_ENV=test \
     SII_PORTAL_HEADLESS=true
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libxml2-utils unzip && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /workspace/business-app-sii/secure/real-sii-tests/artifacts && \
     chown -R pwuser:pwuser /workspace/business-app-sii/secure
 
@@ -73,4 +77,4 @@ RUN chmod 0555 /usr/local/bin/business-app-sii-entrypoint
 USER pwuser
 
 ENTRYPOINT ["/usr/local/bin/business-app-sii-entrypoint"]
-CMD ["node", "scripts/real-sii/test-existing-caf-factura33.cjs"]
+CMD ["node", "scripts/cli/sii-cert.cjs", "--help"]

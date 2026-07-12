@@ -73,14 +73,14 @@ describe('SII real smoke assertions', () => {
     expect(shouldRetryNormalSmokeSendStatus('RCH')).toBe(false);
   });
 
-  it.each(['FAU', 'EMP', 'TMD', 'TMC', 'UNKNOWN'])(
+  it.each(['EMP', 'TMD', 'TMC', 'UNKNOWN'])(
     'retries pending DTE status %s',
     (status) => {
       expect(shouldRetryNormalSmokeDteStatus(status)).toBe(true);
     },
   );
 
-  it.each(['DOK', 'AND', 'ANC', 'DNK', 'FNA', 'MMD'])(
+  it.each(['DOK', 'AND', 'ANC', 'DNK', 'FAU', 'FNA', 'MMD'])(
     'does not retry accepted or definitive DTE status %s',
     (status) => {
       expect(shouldRetryNormalSmokeDteStatus(status)).toBe(false);

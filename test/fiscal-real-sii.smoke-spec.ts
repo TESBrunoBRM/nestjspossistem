@@ -9,7 +9,12 @@ import { FISCAL_SIGNING_PROVIDER } from '../src/fiscal/fiscal-provider.tokens';
 import { FiscalDocumentRepository } from '../src/fiscal-documents/fiscal-document.repository';
 import { loadCertificateMaterialFromP12 } from '../src/fiscal/fiscal-certificate.util';
 import { resolveProjectPath } from '../src/common/utils/project-path.util';
-import { BoletaSiiClient, SiiEnvironment, TipoDTE } from 'sii-engine';
+import {
+  BoletaSiiClient,
+  formatSiiDate,
+  SiiEnvironment,
+  TipoDTE,
+} from 'sii-engine';
 import { createFiscalTestApp } from './support/nest-test-app';
 import { optionalEnv, prepareRealSiiTestEnv } from './support/env-loader';
 import { assertNormalSmokeSendStatus } from './support/sii-smoke-assertions';
@@ -190,7 +195,7 @@ describe('Real SII certification flow (smoke)', () => {
       allowRequest: false,
     });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = formatSiiDate();
     const sendSpy = captureBoletaUploadAttempts();
     let response: Response;
     try {
@@ -459,6 +464,7 @@ function resolveRealSiiTestPfxPath(): string {
 }
 
 type BoletaSend = (
+  this: BoletaSiiClient,
   ...args: Parameters<BoletaSiiClient['send']>
 ) => ReturnType<BoletaSiiClient['send']>;
 
@@ -482,7 +488,7 @@ function captureBoletaUploadAttempts(): jest.SpyInstance {
     ) {
       const [signedEnvelope] = params;
       writeUploadAttemptArtifacts(signedEnvelope);
-      return originalSend(...params);
+      return originalSend.apply(this, params);
     });
 }
 

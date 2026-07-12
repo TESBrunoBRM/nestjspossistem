@@ -1,8 +1,9 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import {
   BoletaSiiClient,
-  LegacySiiClient,
+  DteSiiClient,
   pollOnce,
+  resolveBoletaAuthScope,
   toPublicPollingResult,
   type SigningProvider,
 } from 'sii-engine';
@@ -22,7 +23,7 @@ import {
 @Injectable()
 export class FiscalPollingService {
   private readonly boletaClient = new BoletaSiiClient();
-  private readonly legacyClient = new LegacySiiClient();
+  private readonly dteClient = new DteSiiClient();
   private readonly inFlight = new Set<string>();
 
   constructor(
@@ -53,14 +54,17 @@ export class FiscalPollingService {
     this.inFlight.add(lockKey);
 
     try {
-      const token = await this.tokenProvider.getToken(
-        context,
-        this.signingProvider,
-      );
-      const client =
-        this.resolveDocumentKind(dto) === FiscalPollingDocumentKind.LegacyDte
-          ? this.legacyClient
-          : this.boletaClient;
+      const documentKind = this.resolveDocumentKind(dto);
+      const isBoleta = documentKind === FiscalPollingDocumentKind.Boleta;
+      const token =
+        isBoleta &&
+        resolveBoletaAuthScope(context.environment) === 'boleta_rest'
+          ? await this.tokenProvider.getBoletaToken(
+              context,
+              this.signingProvider,
+            )
+          : await this.tokenProvider.getToken(context, this.signingProvider);
+      const client = isBoleta ? this.boletaClient : this.dteClient;
       const result = await pollOnce(
         dto.trackId,
         { context, token: token.token },
@@ -103,6 +107,6 @@ export class FiscalPollingService {
     if (this.repository.findByTrackId(dto.trackId)) {
       return FiscalPollingDocumentKind.Boleta;
     }
-    return FiscalPollingDocumentKind.LegacyDte;
+    return FiscalPollingDocumentKind.Dte;
   }
 }

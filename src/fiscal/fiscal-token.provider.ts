@@ -1,9 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import axios from 'axios';
 import { XMLParser } from 'fast-xml-parser';
 import { SignedXml } from 'xml-crypto';
 import {
   assertCertificateMatchesContext,
+  BoletaTokenManager,
   CertificateMaterial,
   getCertificateBase64,
   getRsaModulusAndExponent,
@@ -11,7 +12,6 @@ import {
   SigningProvider,
   SiiAuthToken,
   SiiEnvironment,
-  SiiTokenManager,
 } from 'sii-engine';
 
 const SEED_ENDPOINTS: Record<SiiEnvironment, string> = {
@@ -43,12 +43,12 @@ interface SoapResponse {
 
 @Injectable()
 export class FiscalTokenProvider implements OnModuleInit {
-  private readonly logger = new Logger(FiscalTokenProvider.name);
-  private readonly compatCache = new Map<string, SiiAuthToken>();
-  private tokenManager = new SiiTokenManager();
+  private readonly dteCache = new Map<string, SiiAuthToken>();
+  private boletaTokenManager = new BoletaTokenManager();
 
   onModuleInit() {
-    this.tokenManager = new SiiTokenManager();
+    this.dteCache.clear();
+    this.boletaTokenManager = new BoletaTokenManager();
   }
 
   async getToken(
@@ -56,46 +56,41 @@ export class FiscalTokenProvider implements OnModuleInit {
     signingProvider: SigningProvider,
     forceRefresh = false,
   ): Promise<SiiAuthToken> {
-    if (!shouldUseEngineTokenManager()) {
-      return this.getCompatToken(context, signingProvider, forceRefresh);
-    }
+    return this.getDteToken(context, signingProvider, forceRefresh);
+  }
 
-    try {
-      return await this.tokenManager.getToken(
-        context,
-        signingProvider,
-        forceRefresh,
-      );
-    } catch (error) {
-      if (!shouldUseCompatAuth(error)) throw error;
-
-      this.logger.warn(
-        'SiiTokenManager no pudo parsear semilla/token SII; usando fallback compatible local',
-      );
-      return this.getCompatToken(context, signingProvider, forceRefresh);
-    }
+  async getBoletaToken(
+    context: IssuerContext,
+    signingProvider: SigningProvider,
+    forceRefresh = false,
+  ): Promise<SiiAuthToken> {
+    return this.boletaTokenManager.getToken(
+      context,
+      signingProvider,
+      forceRefresh,
+    );
   }
 
   invalidate(context?: IssuerContext): void {
-    this.tokenManager.invalidate(context);
+    this.boletaTokenManager.invalidate(context);
     if (!context) {
-      this.compatCache.clear();
+      this.dteCache.clear();
       return;
     }
 
     const prefix = `${context.environment}:${context.rutEmisor}:`;
-    for (const key of this.compatCache.keys()) {
-      if (key.startsWith(prefix)) this.compatCache.delete(key);
+    for (const key of this.dteCache.keys()) {
+      if (key.startsWith(prefix)) this.dteCache.delete(key);
     }
   }
 
-  private async getCompatToken(
+  private async getDteToken(
     context: IssuerContext,
     signingProvider: SigningProvider,
     forceRefresh: boolean,
   ): Promise<SiiAuthToken> {
-    const cacheKey = this.compatCacheKey(context);
-    const cached = this.compatCache.get(cacheKey);
+    const cacheKey = this.dteCacheKey(context);
+    const cached = this.dteCache.get(cacheKey);
     if (!forceRefresh && cached && isTokenValid(cached)) return cached;
 
     const cert = await signingProvider.getSigningMaterial(context);
@@ -110,11 +105,11 @@ export class FiscalTokenProvider implements OnModuleInit {
       token,
     };
 
-    this.compatCache.set(cacheKey, authToken);
+    this.dteCache.set(cacheKey, authToken);
     return authToken;
   }
 
-  private compatCacheKey(context: IssuerContext): string {
+  private dteCacheKey(context: IssuerContext): string {
     return `${context.environment}:${context.rutEmisor}:${context.certificateRef ?? context.certificateFingerprint ?? 'default'}`;
   }
 }
@@ -321,14 +316,4 @@ function isTokenValid(authToken: SiiAuthToken): boolean {
 
 function httpStatusSuffix(statusCode: number): string {
   return statusCode >= 400 ? ` (HTTP ${statusCode})` : '';
-}
-
-function shouldUseCompatAuth(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-
-  return /semilla|seed|token/i.test(error.message);
-}
-
-function shouldUseEngineTokenManager(): boolean {
-  return process.env.SII_AUTH_USE_ENGINE_MANAGER === 'true';
 }

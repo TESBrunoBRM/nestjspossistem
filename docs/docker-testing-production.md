@@ -17,9 +17,11 @@ Estado: implementacion en curso.
 - [x] Ejecutar smoke de custodia dentro de Docker.
 - [x] Migrar manualmente PFX/password locales a `secrets/`.
 - [x] Ejecutar factura 33 con CAF custodiado contra SII Certificacion: folio 17 aceptado.
-- [ ] Revalidar el smoke completo de factura 33 con polling corregido.
+- [x] Revalidar el smoke completo de factura 33 con polling corregido.
 - [ ] Ejecutar boleta 39 con CAF custodiado contra SII Certificacion.
 - [x] Retirar runners MiniStack, loaders `.env` y comandos legacy.
+- [x] Unificar adquisicion, consulta y emision 33/39 bajo `sii:cert`.
+- [x] Implementar retry 33/39 con Strategy, validacion offline e idempotencia por `trackId`.
 
 ## Objetivo
 
@@ -57,11 +59,11 @@ que la adquisicion CAF funcione en Linux headless.
 `runtime`. La persistencia y los secretos se configuran en el entorno donde se
 despliegue, sin cambiar la imagen.
 
-`compose.certification.yaml` levanta:
+`compose.certification.yaml` define:
 
 - `ministack`: custodia local compatible con S3, SSM y DynamoDB
 - `ministack-init`: crea bucket, tabla y parametros requeridos
-- `acceptance`: ejecuta una suite explicita contra SII Certificacion y termina
+- servicios efimeros para custodia, CAF y emision contra SII Certificacion
 
 El estado de MiniStack se conserva en un volumen nombrado para reutilizar PFX,
 CAF y reservas entre ejecuciones.
@@ -107,16 +109,18 @@ No se debe copiar `REAL_SII_TEST_PFX_PASSWORD` al nuevo `.env`.
 
 ```powershell
 pnpm run docker:build
-pnpm run docker:certification:custody
-pnpm run docker:certification:custody-check
-pnpm run docker:certification:factura33
-pnpm run docker:certification:boleta39
-pnpm run docker:certification:caf33
+pnpm run sii:cert -- custody test
+pnpm run sii:cert -- caf check --type=33
+pnpm run sii:cert -- caf acquire --type=39 --quantity=5
+pnpm run sii:cert -- emit --type=factura
+pnpm run sii:cert -- emit --type=boleta
+pnpm run sii:cert -- down
 pnpm run docker:production:up
 ```
 
-`factura33` y `boleta39` usan solo CAF custodiado. `caf33` es la unica de estas
-operaciones autorizada para solicitar un CAF nuevo.
+`emit` usa solo CAF custodiado. `caf acquire` es la unica operacion autorizada
+para solicitar un CAF nuevo. Los aliases `factura` y `boleta` equivalen a los
+tipos DTE `33` y `39`.
 
 ## Validacion realizada
 

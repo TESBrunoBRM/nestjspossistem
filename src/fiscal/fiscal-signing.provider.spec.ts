@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return */
 import { ConfigService } from '@nestjs/config';
 import { access, readFile } from 'fs/promises';
+import { resolve } from 'path';
 import {
   loadCertificateFromP12,
   SiiEnvironment,
@@ -58,9 +59,10 @@ describe('FiscalSigningProvider', () => {
   });
 
   it('loads a configured PFX certificate without exposing the password through endpoints', async () => {
+    const absolutePfxPath = resolve('secure', 'cert.pfx');
     const config = createConfigService({
       SII_CERT_REF: 'default',
-      SII_PFX_PATH: 'C:\\secure\\cert.pfx',
+      SII_PFX_PATH: absolutePfxPath,
       SII_PFX_PASSWORD: 'secret-pass',
     });
     const pfxBuffer = Buffer.from('fake-pfx');
@@ -71,7 +73,7 @@ describe('FiscalSigningProvider', () => {
     await provider.onModuleInit();
 
     await expect(provider.getSigningMaterial(context)).resolves.toBe(material);
-    expect(mockReadFile).toHaveBeenCalledWith('C:\\secure\\cert.pfx');
+    expect(mockReadFile).toHaveBeenCalledWith(absolutePfxPath);
     expect(mockLoadCertificateFromP12).toHaveBeenCalledWith(
       pfxBuffer,
       'secret-pass',

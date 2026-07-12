@@ -10,12 +10,12 @@ import {
 } from 'class-validator';
 import { IssuerContextDto } from '../../fiscal/dto/issuer-context.dto';
 
-export const SUPPORTED_LEGACY_DTE_TYPES = [33, 34, 46, 52, 56, 61] as const;
+export const SUPPORTED_DTE_TYPES = [33, 34, 46, 52, 56, 61] as const;
 
-class LegacyDteIdDocDto {
+class DteIdDocDto {
   @Type(() => Number)
   @IsInt()
-  @IsIn(SUPPORTED_LEGACY_DTE_TYPES)
+  @IsIn(SUPPORTED_DTE_TYPES)
   tipoDTE: number;
 
   @IsOptional()
@@ -51,7 +51,7 @@ class LegacyDteIdDocDto {
   fechaVencimiento?: string;
 }
 
-class LegacyDteEmisorDto {
+class DteEmisorDto {
   @IsOptional()
   @IsString()
   rutEmisor?: string;
@@ -89,7 +89,7 @@ class LegacyDteEmisorDto {
   cdgSIISucur?: string;
 }
 
-class LegacyDteReceptorDto {
+class DteReceptorDto {
   @IsString()
   rutRecep: string;
 
@@ -121,7 +121,7 @@ class LegacyDteReceptorDto {
   ciudadRecep?: string;
 }
 
-class LegacyDteTotalesDto {
+class DteTotalesDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
@@ -147,7 +147,7 @@ class LegacyDteTotalesDto {
   mntTotal: number;
 }
 
-class LegacyDteDetalleDto {
+class DteDetalleDto {
   @Type(() => Number)
   @IsInt()
   nroLinDet: number;
@@ -182,7 +182,7 @@ class LegacyDteDetalleDto {
   indExe?: number;
 }
 
-class LegacyDteReferenciaDto {
+class DteReferenciaDto {
   @Type(() => Number)
   @IsInt()
   nroLinRef: number;
@@ -209,42 +209,42 @@ class LegacyDteReferenciaDto {
   razonRef: string;
 }
 
-class LegacyDteDocumentDto {
+class DteDocumentDto {
   @ValidateNested()
-  @Type(() => LegacyDteIdDocDto)
-  idDoc: LegacyDteIdDocDto;
+  @Type(() => DteIdDocDto)
+  idDoc: DteIdDocDto;
 
   @ValidateNested()
-  @Type(() => LegacyDteEmisorDto)
-  emisor: LegacyDteEmisorDto;
+  @Type(() => DteEmisorDto)
+  emisor: DteEmisorDto;
 
   @ValidateNested()
-  @Type(() => LegacyDteReceptorDto)
-  receptor: LegacyDteReceptorDto;
+  @Type(() => DteReceptorDto)
+  receptor: DteReceptorDto;
 
   @ValidateNested()
-  @Type(() => LegacyDteTotalesDto)
-  totales: LegacyDteTotalesDto;
+  @Type(() => DteTotalesDto)
+  totales: DteTotalesDto;
 
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => LegacyDteDetalleDto)
-  detalles: LegacyDteDetalleDto[];
+  @Type(() => DteDetalleDto)
+  detalles: DteDetalleDto[];
 
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => LegacyDteReferenciaDto)
-  referencias?: LegacyDteReferenciaDto[];
+  @Type(() => DteReferenciaDto)
+  referencias?: DteReferenciaDto[];
 }
 
-export class EmitLegacyDteDto {
+export class EmitDteDto {
   @IsOptional()
   @ValidateNested()
   @Type(() => IssuerContextDto)
   context?: IssuerContextDto;
 
   @ValidateNested()
-  @Type(() => LegacyDteDocumentDto)
-  document: LegacyDteDocumentDto;
+  @Type(() => DteDocumentDto)
+  document: DteDocumentDto;
 }

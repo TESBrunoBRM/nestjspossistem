@@ -55,10 +55,13 @@ Despues de instalar, `node_modules/sii-engine` debe apuntar a `../sii-engine`. N
 ## Docker local
 
 ```powershell
-pnpm.cmd run docker:certification:custody
-pnpm.cmd run docker:certification:custody-check
-pnpm.cmd run docker:certification:factura33
+pnpm.cmd run sii:cert -- custody test
+pnpm.cmd run sii:cert -- caf check --type=factura
+pnpm.cmd run sii:cert -- emit --type=factura
 ```
+
+Para boleta se usa `--type=boleta`; tambien se aceptan los codigos `33` y `39`.
+La adquisicion de folios es siempre explicita mediante `caf acquire`.
 
 La configuracion no sensible vive en `.env`; PFX, password y API key viven en
 `secrets/`. Las pruebas reales solo se ejecutan mediante
