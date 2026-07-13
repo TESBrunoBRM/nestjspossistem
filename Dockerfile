@@ -42,7 +42,6 @@ WORKDIR /workspace/business-app-sii
 
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/business-app-sii/package.json ./package.json
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/business-app-sii/dist ./dist
-COPY --from=production-deps --chown=pwuser:pwuser /workspace/business-app-sii/public ./public
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/business-app-sii/node_modules ./node_modules
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/sii-engine/package.json /workspace/sii-engine/package.json
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/sii-engine/dist /workspace/sii-engine/dist

@@ -12,7 +12,7 @@ unicamente en [real-sii-testing.md](./real-sii-testing.md).
 
 La plataforma ya tiene implementacion para custodia fiscal por emisor, obtencion/importacion de CAF, boleta 39, factura 33, consultas de envio y consulta DTE. El 2026-07-10 se elimino la copia de `sii-engine` que estaba dentro de este repositorio; el unico motor canonico es ahora el repositorio hermano `../sii-engine`.
 
-El motor separado y `business-app-sii` pasan typecheck. El motor pasa 120 tests en Linux Docker, la aplicacion pasa 146 unit tests y 17 E2E, y MiniStack valida custodia persistente en S3, DynamoDB y SSM. Los fixtures CAF usan vigencia relativa y los smokes normales rechazan errores, reparos, estados desconocidos y estados DTE inconclusos.
+El motor separado y `business-app-sii` pasan typecheck. El motor pasa 120 tests en Linux Docker, la aplicacion pasa 144 unit tests y 16 E2E, y MiniStack valida custodia persistente en S3, DynamoDB y SSM. Los fixtures CAF usan vigencia relativa y los smokes normales rechazan errores, reparos, estados desconocidos y estados DTE inconclusos. La reduccion respecto del conteo anterior corresponde exclusivamente a la eliminacion del Hello World y la prueba defensiva de SimpleAPI ya retirado.
 
 Boleta tiene estrategias explicitas y mutuamente excluyentes por ambiente. En
 Certificacion usa el contrato empiricamente validado el 2026-06-01: token DTE,
@@ -25,6 +25,15 @@ El folio 34 de boleta fue recuperado y enviado exitosamente el 2026-07-12 median
 Maullin/DTE. El SII devolvio `trackId` 253005150 y el correo de resultado confirmo
 `EPR - Envio Procesado`, un documento informado, uno aceptado, cero rechazados y
 cero reparos.
+
+El folio 36 de boleta valido la recuperacion ante un corte de red real. La
+emision normal recibio `ECONNRESET` durante el upload y dejo el sobre firmado
+custodiado como artefacto; la reconciliacion posterior confirmo `FAU - DTE No
+Recibido`. Tras regenerar y validar las firmas se hizo un unico reenvio por el
+mismo transporte Maullin, que devolvio `trackId` 0253006862. El polling avanzo
+de `UNKNOWN` a `EPR` en 10 segundos y la consulta final termino `DOK`, con un
+documento aceptado y sin reparos. Esto confirma que el cierre del polling no
+causo el fallo inicial de upload.
 Los intentos REST previos de Certificacion devolvieron `HTTP 500 / Error 500` y
 no fueron registrados por el SII, pero no dejaron metadata suficiente para
 auditar completamente token, endpoint, headers y respuesta. El OpenAPI oficial
@@ -80,7 +89,9 @@ la respuesta fiscal cruda.
 - disponibilidad de folios CAF 33 por scraping sin solicitar el CAF
 - adquisicion CAF server-side: HTTP primero y fallback Playwright Chromium headless, sin dependencia automatica de Edge o GUI
 - ante una negativa explicita a un timbraje nuevo, reobtencion HTTP de rangos previamente autorizados mediante `rf_reobtencion*_folios`; esa respuesta no dispara Playwright
-- cantidad CAF adaptativa: toma los limites positivos informados por el portal hasta un maximo absoluto de 50; ante disponibilidad desconocida o 0/0 solicita solo 1
+- cantidad CAF adaptativa corregida: `--quantity` es un maximo de 50 y la cantidad efectiva es `min(quantity, Maximo Autorizado)` cuando este es positivo; `Folios Disponibles` se registra como stock ya descargado, no como limite; si el maximo informado es 0 se intenta `quantity` y un rechazo del SII hace fallar el smoke
+- trazabilidad CAF sin secretos: los smokes informan cantidad solicitada, maximo autorizado y rango realmente descargado
+- limpieza de prototipo: retirados pagina demo, Hello World de Nest, wrappers Jest, prueba SimpleAPI obsoleta, utilidades sin referencias, dependencias directas no usadas y el `package-lock.json` duplicado de `sii-engine`
 
 ### Documentos
 
@@ -91,6 +102,9 @@ la respuesta fiscal cruda.
 - consulta de boleta por `QueryEstUp`/`QueryEstDte` en Certificacion y REST en Produccion
 - artefacto de muestra impresa con payload TED/PDF417
 - almacenamiento local de artefactos de smoke bajo `secure/real-sii-tests/artifacts`
+- ante un upload incierto, el smoke conserva el folio y sobre firmado, informa
+  el comando exacto de reconciliacion y evita un segundo fallo en cascada por
+  ausencia de `trackId`
 
 ### Hitos comprobados previamente
 
@@ -108,9 +122,7 @@ Estos hitos historicos no reemplazan una regresion verde en la fecha actual.
 - el motor independiente pasa 25 archivos de prueba y 120 tests
 - `business-app-sii` pasa `tsc --noEmit` y `nest build` consumiendo el repositorio separado
 
-## Auditoria de pruebas del 2026-07-09
-
-No se modifico codigo de aplicacion ni de tests durante esta auditoria.
+## Auditoria de pruebas iniciada el 2026-07-09
 
 ### Hallazgos de calidad
 
@@ -162,8 +174,8 @@ El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos 
 | Tests `sii-engine`                         | 25 archivos; 120/120 pasan            | Incluye estrategias separadas de boleta, contrato wire Maullin, polling EPR, XMLDSig, DTE/factura y RVD |
 | Typecheck general `business-app-sii`       | Paso                                  | Resuelve tipos desde `../sii-engine`                                                                    |
 | Build `business-app-sii`                   | Paso                                  | Nest compila consumiendo el motor separado                                                              |
-| Unit tests Nest contra motor separado      | 20/20 suites; 146/146 tests pasan     | Incluye recuperacion firmada, `FAU`, CAF adaptativa y runtime headless                                  |
-| E2E interno                                | 2/2 suites; 17/17 tests pasan         | Incluye limite CAF de 50, POST de factura 33 y emisiones aisladas por caso                              |
+| Unit tests Nest contra motor separado      | 18/18 suites; 144/144 tests pasan     | Incluye recuperacion firmada, `FAU`, semantica CAF adaptativa y runtime headless                        |
+| E2E interno                                | 1/1 suite; 16/16 tests pasan          | Incluye limite CAF de 50, POST de factura 33 y emisiones aisladas por caso                              |
 | Bootstrap MiniStack                        | Paso                                  | S3, DynamoDB y SSM creados/verificados                                                                  |
 | Smoke custody MiniStack                    | Paso                                  | PFX/password/CAF persisten entre reinicios y permiten reservar folio                                    |
 | Smoke factura 33 con CAF existente         | Paso                                  | CAF 33 adquirido, persistido y reutilizado desde MiniStack Docker                                       |
@@ -196,7 +208,7 @@ smokes rechaza cualquier otro valor. No se prueba contra Produccion.
 | B39-13 | Cabeceras historicas vs. retry                       | Historico: Mozilla 4.0; retry: `axios/1.16.0`. `Content-Length` y multipart equivalentes                                | Diferencia de transporte concreta y reproducible                       |
 | B39-14 | Seleccion explicita por ambiente                     | Certificacion usa Maullin/DTE; Produccion usa Rahue/API REST; no existe fallback                                        | Canales separados en estrategias                                       |
 | B39-15 | Contrato wire de Certificacion                       | Verifica orden multipart, Latin-1, nombre/tipo de archivo, User-Agent historico, `Content-Length` y ausencia de chunked | Contrato historico reproducido localmente                              |
-| B39-16 | Regresiones sin red SII                              | Motor 120/120, Nest 146/146, E2E 17/17 y build runtime/acceptance verdes                                                | Cambio integrado sin mezclar factura                                   |
+| B39-16 | Regresiones sin red SII                              | Motor 120/120, Nest 144/144, E2E 16/16 y build runtime/acceptance verdes                                                | Cambio integrado sin mezclar factura                                   |
 | B39-17 | `retry reconcile` con Maullin/DTE, 2026-07-12 22:13Z | `FAU - DTE No Recibido`; no reservo folios ni realizo upload                                                            | Folio 34 habilitado para preparar un sobre fresco                      |
 | B39-18 | `retry send` con sobre fresco, 2026-07-12 22:15Z     | TrackId 253005150; correo SII `EPR`, informado 1, aceptado 1, sin rechazos ni reparos                                   | Flujo Maullin historico recuperado y validado realmente                |
 | B39-19 | Cierre local posterior al upload                     | El upload termino, pero el polling trataba `EPR` como transitorio                                                       | Corregido: `EPR` terminal, trazas por intento y reanudacion sin upload |
@@ -233,7 +245,7 @@ Fuentes oficiales contrastadas:
 - [x] Agregar al trace el detalle sanitario de endpoint, HTTP status,
       content-type y bytes cuando exista una respuesta HTTP no exitosa.
 - [x] Ejecutar regresiones locales y Docker sin contactar al SII: motor 120/120,
-      Nest 146/146 y E2E 17/17.
+      Nest 144/144 y E2E 16/16.
 - [x] Definir un adaptador unico de Certificacion que reproduce el contrato
       Maullin historico y no realiza fallback.
 - [x] Incorporar el User-Agent historico y un test de contrato wire-level.

@@ -36,6 +36,10 @@ x-certification-environment: &certification-environment
   SII_PORTAL_HEADLESS: 'true'
   SII_PORTAL_PROGRESS_LOG_ENABLED: 'true'
 
+x-existing-caf-environment: &existing-caf-environment
+  <<: *certification-environment
+  REAL_SII_TEST_SKIP_CAF_REQUEST: 'true'
+
 x-acceptance-service: &acceptance-service
   image: business-app-sii-acceptance:${APP_IMAGE_TAG:-local}
   build:
@@ -123,15 +127,27 @@ services:
 
   emit-factura33:
     <<: *acceptance-service
+    environment: *existing-caf-environment
     command:
       - node
-      - scripts/real-sii/test-existing-caf-factura33.cjs
+      - --experimental-vm-modules
+      - node_modules/jest/bin/jest.js
+      - --config
+      - ./test/jest-smoke.json
+      - --runInBand
+      - ./test/fiscal-real-sii-factura33.smoke-spec.ts
 
   emit-boleta39:
     <<: *acceptance-service
+    environment: *existing-caf-environment
     command:
       - node
-      - scripts/real-sii/test-existing-caf.cjs
+      - --experimental-vm-modules
+      - node_modules/jest/bin/jest.js
+      - --config
+      - ./test/jest-smoke.json
+      - --runInBand
+      - ./test/fiscal-real-sii.smoke-spec.ts
 
   caf-acquisition:
     <<: *acceptance-service

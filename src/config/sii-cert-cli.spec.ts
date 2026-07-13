@@ -84,7 +84,18 @@ describe('sii:cert CLI', () => {
     ]);
     expect(validate.dockerArgs).toContain(service);
     expect(validate.dockerArgs).toContain('--no-deps');
-    expect(validate.dockerArgs).toContain('scripts/real-sii/retry-folio.cjs');
+    expect(validate.dockerArgs).toContain(
+      `REAL_SII_TEST_RETRY_DTE_TYPE=${type}`,
+    );
+    expect(validate.dockerArgs).toContain(
+      'REAL_SII_TEST_RETRY_CONFIRMED_FOLIO=34',
+    );
+    expect(validate.dockerArgs).toContain(
+      'REAL_SII_TEST_RETRY_OPERATION=validate',
+    );
+    expect(validate.dockerArgs).toContain(
+      './test/fiscal-real-sii-retry.smoke-spec.ts',
+    );
 
     const reconcile = resolveCommand([
       'retry',
@@ -119,12 +130,7 @@ describe('sii:cert CLI', () => {
 
   it('limits controlled preparation to boleta 39', () => {
     expect(() =>
-      resolveCommand([
-        'retry',
-        'prepare',
-        '--type=33',
-        '--folio=16',
-      ]),
+      resolveCommand(['retry', 'prepare', '--type=33', '--folio=16']),
     ).toThrow('solo para boleta DTE 39');
   });
 

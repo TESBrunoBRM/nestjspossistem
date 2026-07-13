@@ -182,6 +182,32 @@ describe('FiscalCafAcquisitionService', () => {
     expect(result.quantityRequested).toBe(3);
   });
 
+  it('does not treat already-downloaded stock as a request limit', async () => {
+    queryAvailableFoliosMock.mockResolvedValueOnce({
+      requestId: 'folio-availability-stock-3',
+      status: 'available',
+      method: 'sii_portal_availability_scraping',
+      context,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantityProbed: 1,
+      availableFolios: 3,
+      maxAuthorizedFolios: 50,
+      requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+      retryable: false,
+    });
+
+    const result = await service.requestCaf({
+      context: contextDto,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantity: 50,
+    });
+
+    expect(requestCafMock).toHaveBeenCalledWith(
+      expect.objectContaining({ quantity: 50 }),
+    );
+    expect(result.quantityRequested).toBe(50);
+  });
+
   it('caps a large portal allowance at fifty folios', async () => {
     queryAvailableFoliosMock.mockResolvedValueOnce({
       requestId: 'folio-availability-1000',
@@ -211,7 +237,7 @@ describe('FiscalCafAcquisitionService', () => {
     expect(result.quantityRequested).toBe(50);
   });
 
-  it('falls back to one folio when portal availability counters are inconclusive', async () => {
+  it('attempts the requested quantity when the portal reports a zero maximum', async () => {
     queryAvailableFoliosMock.mockResolvedValueOnce({
       requestId: 'folio-availability-zero',
       status: 'available',
@@ -225,15 +251,16 @@ describe('FiscalCafAcquisitionService', () => {
       retryable: false,
     });
 
-    await service.requestCaf({
+    const result = await service.requestCaf({
       context: contextDto,
       tipoDTE: TipoDTE.FacturaElectronica,
       quantity: 50,
     });
 
     expect(requestCafMock).toHaveBeenCalledWith(
-      expect.objectContaining({ quantity: 1 }),
+      expect.objectContaining({ quantity: 50 }),
     );
+    expect(result.quantityRequested).toBe(50);
   });
 
   it('imports downloaded CAF internally and returns only public CAF metadata', async () => {

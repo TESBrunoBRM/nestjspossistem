@@ -86,7 +86,9 @@ function resolveCommand(argv) {
   }
 
   if (command === 'retry') {
-    if (!['validate', 'prepare', 'reconcile', 'send'].includes(actionOrOption)) {
+    if (
+      !['validate', 'prepare', 'reconcile', 'send'].includes(actionOrOption)
+    ) {
       throw new Error(
         'Uso: sii:cert -- retry <validate|prepare|reconcile|send> --type=<33|39> --folio=<numero>',
       );
@@ -109,12 +111,21 @@ function resolveCommand(argv) {
       );
     }
     runArgs.push(
+      '-e',
+      `REAL_SII_TEST_RETRY_DTE_TYPE=${type.code}`,
+      '-e',
+      `REAL_SII_TEST_RETRY_CONFIRMED_FOLIO=${folio}`,
+      '-e',
+      `REAL_SII_TEST_RETRY_OPERATION=${actionOrOption}`,
       service,
       'node',
-      'scripts/real-sii/retry-folio.cjs',
-      actionOrOption,
-      String(type.code),
-      String(folio),
+      '--experimental-vm-modules',
+      'node_modules/jest/bin/jest.js',
+      '--config',
+      './test/jest-smoke.json',
+      '--runInBand',
+      '--verbose',
+      './test/fiscal-real-sii-retry.smoke-spec.ts',
     );
     return commandResult(
       runArgs,
@@ -122,9 +133,9 @@ function resolveCommand(argv) {
         ? `Validando offline XSD, TED y XMLDSig del DTE ${type.code}, folio ${folio}.`
         : actionOrOption === 'prepare'
           ? `Regenerando y firmando DTE ${type.code}, folio ${folio}, sin upload. Requiere reconciliacion not_received.`
-        : actionOrOption === 'reconcile'
-          ? `Consultando en SII si DTE ${type.code}, folio ${folio}, fue recibido. No realiza upload.`
-          : `Recuperando DTE ${type.code}, folio ${folio}, en SII Certificacion. No usar si el SII ya lo recibio.`,
+          : actionOrOption === 'reconcile'
+            ? `Consultando en SII si DTE ${type.code}, folio ${folio}, fue recibido. No realiza upload.`
+            : `Recuperando DTE ${type.code}, folio ${folio}, en SII Certificacion. No usar si el SII ya lo recibio.`,
     );
   }
 

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   assertCafAcquisitionRequest,
   toPublicCafAcquisitionResult,
@@ -31,6 +31,8 @@ import {
 
 @Injectable()
 export class FiscalCafAcquisitionService {
+  private readonly logger = new Logger(FiscalCafAcquisitionService.name);
+
   constructor(
     private readonly contextResolver: FiscalContextResolver,
     @Inject(FISCAL_CAF_ACQUISITION_PROVIDER)
@@ -113,18 +115,27 @@ export class FiscalCafAcquisitionService {
         method: 'sii_portal_availability_scraping',
       },
     );
-    if (availability.status !== 'available') return 1;
+    const maxAuthorized = availability.maxAuthorizedFolios;
+    const hasNumericMaximum =
+      availability.status === 'available' && Number.isInteger(maxAuthorized);
+    const effectiveQuantity = !hasNumericMaximum
+      ? 1
+      : Number(maxAuthorized) === 0
+        ? requestedCap
+        : Number(maxAuthorized) > 0
+          ? Math.min(requestedCap, Number(maxAuthorized))
+          : 1;
+    const decision = !hasNumericMaximum
+      ? 'conservative_unknown'
+      : Number(maxAuthorized) === 0
+        ? 'requested_despite_zero'
+        : 'max_authorized';
 
-    const portalLimits = [
-      availability.availableFolios,
-      availability.maxAuthorizedFolios,
-    ].filter(
-      (value): value is number => Number.isInteger(value) && Number(value) > 0,
+    this.logger.log(
+      `Cantidad CAF resuelta: requestedMax=${requestedCap} availableStock=${availability.availableFolios ?? 'n/a'} maxAuthorized=${maxAuthorized ?? 'n/a'} effective=${effectiveQuantity} decision=${decision}`,
     );
 
-    return portalLimits.length > 0
-      ? Math.min(requestedCap, ...portalLimits)
-      : 1;
+    return effectiveQuantity;
   }
 
   private idempotencyScope(

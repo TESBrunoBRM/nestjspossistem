@@ -175,7 +175,6 @@ describe('FiscalController (e2e)', () => {
     expect(response.body.data).toMatchObject({
       engine: 'sii-engine',
       custodyMode: 'memory',
-      simpleApiEnabled: false,
       status: 'ok',
     });
     expectPublicPayloadSafe(response.body);

@@ -1,6 +1,6 @@
 # Docker para certificacion y produccion
 
-Estado: implementacion en curso.
+Estado: implementado.
 
 ## Checklist de avance
 
@@ -25,6 +25,7 @@ Estado: implementacion en curso.
 - [x] Separar boleta por ambiente: Maullin/DTE en Certificacion y Rahue/API REST en Produccion, sin fallback.
 - [x] Mantener factura y RVD aislados en el cliente DTE.
 - [x] Bloquear los smokes reales si el ambiente no es `CERTIFICACION`.
+- [x] Retirar pagina demo, boilerplate Nest y wrappers Jest sin logica propia.
 
 ## Objetivo
 

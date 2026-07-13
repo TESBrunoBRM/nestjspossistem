@@ -125,6 +125,9 @@ describe(`Real SII CAF ${tipoDTE} acquisition (smoke)`, () => {
     assertPublicPayloadSafe(availabilityResponse.body);
     const availabilityData =
       responseData<FolioAvailabilityApiData>(availabilityResponse);
+    process.stdout.write(
+      `[real-sii:caf:${tipoDTE}] requestedMax=${cafQuantity} availableStock=${availabilityData.availableFolios ?? 'n/a'} maxAuthorized=${availabilityData.maxAuthorizedFolios ?? 'n/a'}\n`,
+    );
     if (availabilityData.status !== 'available') {
       writeFailureArtifact('availability', availabilityResponse.body);
       throw new Error(
@@ -145,6 +148,15 @@ describe(`Real SII CAF ${tipoDTE} acquisition (smoke)`, () => {
 
     assertPublicPayloadSafe(cafResponse.body);
     const cafData = responseData<CafRequestApiData>(cafResponse);
+    const rangeStart = cafData.caf?.rangeStart;
+    const rangeEnd = cafData.caf?.rangeEnd;
+    const downloadedFolios =
+      Number.isInteger(rangeStart) && Number.isInteger(rangeEnd)
+        ? Number(rangeEnd) - Number(rangeStart) + 1
+        : undefined;
+    process.stdout.write(
+      `[real-sii:caf:${tipoDTE}] effectiveRequested=${cafData.quantityRequested ?? 'n/a'} downloadedRange=${rangeStart ?? 'n/a'}-${rangeEnd ?? 'n/a'} downloadedFolios=${downloadedFolios ?? 'n/a'}\n`,
+    );
     if (cafData.status !== 'imported') {
       writeFailureArtifact('acquisition', cafResponse.body);
       throw new Error(
@@ -175,7 +187,13 @@ interface CafRequestApiData {
   detail?: string;
   retryable?: boolean;
   tipoDTE?: number;
-  caf?: { rutEmisor?: string; tipoDTE?: number };
+  quantityRequested?: number;
+  caf?: {
+    rutEmisor?: string;
+    tipoDTE?: number;
+    rangeStart?: number;
+    rangeEnd?: number;
+  };
 }
 
 interface FolioAvailabilityApiData {

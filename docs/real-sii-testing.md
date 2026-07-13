@@ -86,7 +86,19 @@ requiere una cuenta AWS para este flujo.
 
 Los valores admitidos por `--type` son `factura`, `boleta`, `33` y `39`.
 `--quantity` acepta entre 1 y 50, representa un maximo y solo aplica a
-`caf acquire`; la disponibilidad del SII puede reducir la cantidad obtenida.
+`caf acquire`. El servicio envia `min(quantity, Maximo Autorizado)` al portal.
+`Folios Disponibles` es el stock ya descargado y no se usa como limite de la
+solicitud. Si el maximo informado es `0`, se intenta igualmente `quantity`; si
+el valor no puede determinarse, se solicita un unico folio como medida
+conservadora. El SII puede reducir o rechazar la cantidad y, en caso de rechazo,
+el smoke falla.
+
+El smoke registra `requestedMax`, `availableStock`, `maxAuthorized`,
+`effectiveRequested` y el rango finalmente descargado. Estos datos permiten
+distinguir una reduccion hecha por la aplicacion de una restriccion del SII.
+La semantica de stock y maximo se basa en la
+[FAQ de Folios Disponibles del SII](https://www.sii.cl/preguntas_frecuentes/catastro/001_012_6585.htm)
+y su [informativo de timbraje electronico](https://www.sii.cl/factura_electronica/factura_mercado/timbraje_electronico.pdf).
 
 Ayuda de la CLI:
 

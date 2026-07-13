@@ -13,8 +13,6 @@
 !business-app-sii/test/**
 !business-app-sii/scripts/
 !business-app-sii/scripts/**
-!business-app-sii/public/
-!business-app-sii/public/**
 !business-app-sii/docker/
 !business-app-sii/docker/**
 
