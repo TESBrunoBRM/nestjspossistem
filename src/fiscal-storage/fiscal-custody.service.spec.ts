@@ -7,6 +7,7 @@ import {
 } from 'sii-engine';
 import { loadCertificateMaterialFromP12 } from '../fiscal/fiscal-certificate.util';
 import { FiscalCustodyService } from './fiscal-custody.service';
+import { TEST_CAF_AUTHORIZATION_DATE } from '../../test/support/fiscal-fixtures';
 
 jest.mock('../fiscal/fiscal-certificate.util', () => {
   const actual = jest.requireActual<
@@ -91,7 +92,7 @@ describe('FiscalCustodyService', () => {
 
     await service.saveCaf({
       context,
-      caf: cafMaterial('76123456-0', 100, 102, todayIsoDate()),
+      caf: cafMaterial('76123456-0', 100, 102),
     });
 
     const first = await service.getNextFolio(
@@ -123,12 +124,7 @@ function mockConfigService(values: Record<string, unknown>): ConfigService {
   } as unknown as ConfigService;
 }
 
-function cafMaterial(
-  rutEmisor: string,
-  rangeStart: number,
-  rangeEnd: number,
-  fechaAutorizacion = '2026-01-01',
-) {
+function cafMaterial(rutEmisor: string, rangeStart: number, rangeEnd: number) {
   const rawXml = `<?xml version="1.0" encoding="ISO-8859-1"?>
 <AUTORIZACION>
   <CAF version="1.0">
@@ -137,7 +133,7 @@ function cafMaterial(
       <RS>EMISOR TEST</RS>
       <TD>39</TD>
       <RNG><D>${rangeStart}</D><H>${rangeEnd}</H></RNG>
-      <FA>${fechaAutorizacion}</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK><M>00</M><E>03</E></RSAPK>
       <IDK>1</IDK>
     </DA>
@@ -154,7 +150,7 @@ function cafMaterial(
       tipoDTE: TipoDTE.BoletaElectronica,
       rangeStart,
       rangeEnd,
-      fechaAutorizacion,
+      fechaAutorizacion: TEST_CAF_AUTHORIZATION_DATE,
       rsaPk: {
         modulus: '00',
         exponent: '03',
@@ -166,12 +162,4 @@ function cafMaterial(
     rsask: 'private-key',
     rawXml,
   };
-}
-
-function todayIsoDate(): string {
-  const today = new Date();
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(
-    today.getDate(),
-  )}`;
 }

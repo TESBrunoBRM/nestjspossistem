@@ -18,6 +18,7 @@ import {
   FISCAL_CAF_ACQUISITION_REPOSITORY,
 } from './fiscal-caf-acquisition.tokens';
 import type { FolioAvailabilityProvider } from './fiscal-folio-availability.types';
+import { TEST_CAF_AUTHORIZATION_DATE } from '../../test/support/fiscal-fixtures';
 
 const context: IssuerContext = {
   environment: SiiEnvironment.Certificacion,
@@ -150,6 +151,116 @@ describe('FiscalCafAcquisitionService', () => {
     expect(first.requestId).toBe('caf-request-1');
     expect(second.requestId).toBe('caf-request-1');
     expect(requestCafMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('requests all three folios when the portal only allows three', async () => {
+    queryAvailableFoliosMock.mockResolvedValueOnce({
+      requestId: 'folio-availability-3',
+      status: 'available',
+      method: 'sii_portal_availability_scraping',
+      context,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantityProbed: 1,
+      availableFolios: 3,
+      maxAuthorizedFolios: 3,
+      requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+      retryable: false,
+    });
+
+    const result = await service.requestCaf({
+      context: contextDto,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantity: 50,
+    });
+
+    expect(requestCafMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tipoDTE: TipoDTE.FacturaElectronica,
+        quantity: 3,
+      }),
+    );
+    expect(result.quantityRequested).toBe(3);
+  });
+
+  it('does not treat already-downloaded stock as a request limit', async () => {
+    queryAvailableFoliosMock.mockResolvedValueOnce({
+      requestId: 'folio-availability-stock-3',
+      status: 'available',
+      method: 'sii_portal_availability_scraping',
+      context,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantityProbed: 1,
+      availableFolios: 3,
+      maxAuthorizedFolios: 50,
+      requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+      retryable: false,
+    });
+
+    const result = await service.requestCaf({
+      context: contextDto,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantity: 50,
+    });
+
+    expect(requestCafMock).toHaveBeenCalledWith(
+      expect.objectContaining({ quantity: 50 }),
+    );
+    expect(result.quantityRequested).toBe(50);
+  });
+
+  it('caps a large portal allowance at fifty folios', async () => {
+    queryAvailableFoliosMock.mockResolvedValueOnce({
+      requestId: 'folio-availability-1000',
+      status: 'available',
+      method: 'sii_portal_availability_scraping',
+      context,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantityProbed: 1,
+      availableFolios: 1000,
+      maxAuthorizedFolios: 1000,
+      requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+      retryable: false,
+    });
+
+    const result = await service.requestCaf({
+      context: contextDto,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantity: 1000,
+    });
+
+    expect(requestCafMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tipoDTE: TipoDTE.FacturaElectronica,
+        quantity: 50,
+      }),
+    );
+    expect(result.quantityRequested).toBe(50);
+  });
+
+  it('attempts the requested quantity when the portal reports a zero maximum', async () => {
+    queryAvailableFoliosMock.mockResolvedValueOnce({
+      requestId: 'folio-availability-zero',
+      status: 'available',
+      method: 'sii_portal_availability_scraping',
+      context,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantityProbed: 1,
+      availableFolios: 0,
+      maxAuthorizedFolios: 0,
+      requestedAt: new Date('2026-05-26T12:00:00.000Z'),
+      retryable: false,
+    });
+
+    const result = await service.requestCaf({
+      context: contextDto,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      quantity: 50,
+    });
+
+    expect(requestCafMock).toHaveBeenCalledWith(
+      expect.objectContaining({ quantity: 50 }),
+    );
+    expect(result.quantityRequested).toBe(50);
   });
 
   it('imports downloaded CAF internally and returns only public CAF metadata', async () => {
@@ -312,7 +423,7 @@ function cafXml(
       <RS>EMISOR TEST</RS>
       <TD>${tipoDTE}</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
-      <FA>2026-01-01</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK><M>00</M><E>03</E></RSAPK>
       <IDK>1</IDK>
     </DA>

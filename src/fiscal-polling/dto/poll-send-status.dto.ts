@@ -12,7 +12,7 @@ import { IssuerContextDto } from '../../fiscal/dto/issuer-context.dto';
 export enum FiscalPollingDocumentKind {
   Boleta = 'boleta',
   Rvd = 'rvd',
-  LegacyDte = 'legacy_dte',
+  Dte = 'dte',
 }
 
 export class PollSendStatusDto {

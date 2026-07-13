@@ -1,0 +1,27 @@
+name: ${COMPOSE_PROJECT_NAME:-business-app-sii}
+
+services:
+  app:
+    image: business-app-sii:${APP_IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile: business-app-sii/Dockerfile
+      target: runtime
+    environment:
+      PORT: "3000"
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    init: true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/api/fiscal/health')
+          .then((response) => { if (!response.ok) process.exit(1) })
+          .catch(() => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

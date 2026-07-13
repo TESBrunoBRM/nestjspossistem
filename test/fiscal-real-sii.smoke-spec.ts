@@ -9,9 +9,15 @@ import { FISCAL_SIGNING_PROVIDER } from '../src/fiscal/fiscal-provider.tokens';
 import { FiscalDocumentRepository } from '../src/fiscal-documents/fiscal-document.repository';
 import { loadCertificateMaterialFromP12 } from '../src/fiscal/fiscal-certificate.util';
 import { resolveProjectPath } from '../src/common/utils/project-path.util';
-import { BoletaSiiClient, SiiEnvironment, TipoDTE } from 'sii-engine';
+import {
+  BoletaSiiClient,
+  formatSiiDate,
+  SiiEnvironment,
+  TipoDTE,
+} from 'sii-engine';
 import { createFiscalTestApp } from './support/nest-test-app';
 import { optionalEnv, prepareRealSiiTestEnv } from './support/env-loader';
+import { assertNormalSmokeSendStatus } from './support/sii-smoke-assertions';
 
 prepareRealSiiTestEnv();
 
@@ -56,8 +62,16 @@ describe('Real SII certification flow (smoke)', () => {
   const environment = parseEnvironment(
     optionalEnv('REAL_SII_TEST_ENVIRONMENT') || 'CERTIFICACION',
   );
+  const statusSettleDelayMs = Number(
+    optionalEnv('REAL_SII_TEST_STATUS_SETTLE_MS') || '5000',
+  );
 
   beforeAll(async () => {
+    if (environment !== SiiEnvironment.Certificacion) {
+      throw new Error(
+        'El smoke fiscal-real-sii de boleta solo puede ejecutarse con REAL_SII_TEST_ENVIRONMENT=CERTIFICACION. Se rechazo la ejecucion antes de contactar al SII.',
+      );
+    }
     if (!rutEmisor) {
       throw new Error(
         'Falta REAL_SII_TEST_RUT_EMISOR o SII_RUT_EMISOR para las pruebas reales del SII.',
@@ -88,6 +102,7 @@ describe('Real SII certification flow (smoke)', () => {
         `REAL_SII_TEST_NRO_RESOLUCION o SII_NRO_RESOLUCION es invalido (${nroResolucionRaw || 'vacio'}). Debe ser un entero mayor o igual a 0 y corresponder a la resolucion DTE real del emisor en SII.`,
       );
     }
+    assertValidSettleDelay(statusSettleDelayMs);
     try {
       loadCertificateMaterialFromP12(
         readFileSync(pfxPath),
@@ -185,57 +200,64 @@ describe('Real SII certification flow (smoke)', () => {
       allowRequest: false,
     });
 
-    const today = new Date().toISOString().slice(0, 10);
-    const sendSpy = captureBoletaUploadAttempts();
-    const response = await request(testServer(app))
-      .post('/api/fiscal/documents/boletas')
-      .set('x-api-key', apiKey)
-      .send({
-        context: {
-          tenantId,
-          merchantId,
-          branchId,
-          rutEmisor,
-          environment,
-        },
-        document: {
-          idDoc: {
-            tipoDTE: TipoDTE.BoletaElectronica,
-            fechaEmision: today,
-          },
-          emisor: {
+    const today = formatSiiDate();
+    const sendCapture = captureBoletaUploadAttempts();
+    let response: Response;
+    try {
+      response = await request(testServer(app))
+        .post('/api/fiscal/documents/boletas')
+        .set('x-api-key', apiKey)
+        .send({
+          context: {
+            tenantId,
+            merchantId,
+            branchId,
             rutEmisor,
-            rznSoc: 'PRUEBA CERTIFICACION SII',
-            giroEmis: 'VENTA AL POR MENOR',
-            acteco: 521100,
-            dirOrigen: 'AV. PROVIDENCIA 123',
-            cmnaOrigen: 'PROVIDENCIA',
+            environment,
           },
-          detalles: [
-            {
-              nroLinDet: 1,
-              nmbItem: `Smoke ${today}`,
-              qtyItem: 1,
-              prcItem: 500,
-              montoItem: 500,
+          document: {
+            idDoc: {
+              tipoDTE: TipoDTE.BoletaElectronica,
+              fechaEmision: today,
             },
-          ],
-          totales: {
-            mntTotal: 500,
+            emisor: {
+              rutEmisor,
+              rznSoc: 'PRUEBA CERTIFICACION SII',
+              giroEmis: 'VENTA AL POR MENOR',
+              acteco: 521100,
+              dirOrigen: 'AV. PROVIDENCIA 123',
+              cmnaOrigen: 'PROVIDENCIA',
+            },
+            detalles: [
+              {
+                nroLinDet: 1,
+                nmbItem: `Smoke ${today}`,
+                qtyItem: 1,
+                prcItem: 500,
+                montoItem: 500,
+              },
+            ],
+            totales: {
+              mntTotal: 500,
+            },
           },
-        },
-      });
+        });
+    } finally {
+      sendCapture.spy.mockRestore();
+    }
 
     if (response.status !== 201) {
       writeLastUploadError(response.body);
+      const attemptedFolio = sendCapture.getAttemptedFolio();
+      const recoveryHint = attemptedFolio
+        ? ` El folio ${attemptedFolio} quedo reservado con artefacto firmado. No emitas otro documento; ejecuta: pnpm.cmd run sii:cert -- retry reconcile --type=39 --folio=${attemptedFolio}`
+        : '';
       throw new Error(
         `La emision real SII esperaba HTTP 201 y recibio ${response.status}. Body: ${JSON.stringify(
           response.body,
-        )}`,
+        )}.${recoveryHint}`,
       );
     }
-
-    sendSpy.mockRestore();
 
     const emitData = responseData<EmitBoletaApiData>(response);
     internalId = emitData.internalId;
@@ -244,7 +266,6 @@ describe('Real SII certification flow (smoke)', () => {
     expect(emitData.internalId).toBeTruthy();
     expect(emitData.trackId).toBeTruthy();
     expect(emitData.folio).toBeGreaterThan(0);
-    expect(emitData.status).toBeTruthy();
 
     writeDebugArtifacts(app, {
       internalId,
@@ -253,11 +274,23 @@ describe('Real SII certification flow (smoke)', () => {
       environment,
       trackId,
     });
+
+    assertNormalSmokeSendStatus(
+      emitData.status,
+      'Upload de boleta 39',
+      emitData.detail,
+    );
   });
 
   it('queries the boleta status with the returned trackId', async () => {
-    expect(internalId).toBeTruthy();
-    expect(trackId).toBeTruthy();
+    if (!internalId || !trackId) {
+      process.stdout.write(
+        '[real-sii:boleta39] Consulta de estado omitida porque el upload no produjo internalId/trackId.\n',
+      );
+      return;
+    }
+
+    await delay(statusSettleDelayMs);
 
     const response = await request(testServer(app))
       .get(`/api/fiscal/documents/${internalId}/status`)
@@ -271,7 +304,11 @@ describe('Real SII certification flow (smoke)', () => {
 
     const statusData = responseData<SendStatusApiData>(response);
     expect(statusData.trackId).toBe(trackId);
-    expect(statusData.normalizedStatus).toBeTruthy();
+    assertNormalSmokeSendStatus(
+      statusData.normalizedStatus,
+      'Consulta de envio de boleta 39',
+      statusData.detail,
+    );
   });
 });
 
@@ -289,11 +326,13 @@ interface EmitBoletaApiData {
   trackId: string;
   folio: number;
   status: string;
+  detail?: string;
 }
 
 interface SendStatusApiData {
   trackId: string;
   normalizedStatus: string;
+  detail?: string;
 }
 
 interface CafRequestApiData {
@@ -369,7 +408,7 @@ async function ensureUsableCafAvailable(input: {
 
   if (!input.allowRequest) {
     throw new Error(
-      'No existe un CAF activo para la boleta de pruebas y REAL_SII_TEST_SKIP_CAF_REQUEST impide solicitar uno nuevo. Carga/importa un CAF antes de ejecutar este smoke.',
+      'No existe un CAF activo para la boleta de pruebas y esta etapa no solicita uno nuevo. La etapa previa de adquisicion debe terminar correctamente, o debe cargarse un CAF existente.',
     );
   }
 
@@ -411,6 +450,18 @@ function parseBooleanEnv(value?: string): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
+function assertValidSettleDelay(value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > 60_000) {
+    throw new Error(
+      `REAL_SII_TEST_STATUS_SETTLE_MS es invalido (${String(value)}). Debe ser un entero entre 0 y 60000.`,
+    );
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function resolveRealSiiTestPfxPath(): string {
   const configuredPath = optionalEnv('REAL_SII_TEST_PFX_PATH');
   if (configuredPath) {
@@ -426,10 +477,11 @@ function resolveRealSiiTestPfxPath(): string {
 }
 
 type BoletaSend = (
+  this: BoletaSiiClient,
   ...args: Parameters<BoletaSiiClient['send']>
 ) => ReturnType<BoletaSiiClient['send']>;
 
-function captureBoletaUploadAttempts(): jest.SpyInstance {
+function captureBoletaUploadAttempts(): BoletaUploadCapture {
   const originalSendCandidate: unknown = Object.getOwnPropertyDescriptor(
     BoletaSiiClient.prototype,
     'send',
@@ -441,19 +493,25 @@ function captureBoletaUploadAttempts(): jest.SpyInstance {
 
   const originalSend = originalSendCandidate as BoletaSend;
 
-  return jest
+  let attemptedFolio: string | undefined;
+  const spy = jest
     .spyOn(BoletaSiiClient.prototype, 'send')
     .mockImplementation(function (
       this: BoletaSiiClient,
       ...params: Parameters<BoletaSiiClient['send']>
     ) {
       const [signedEnvelope] = params;
-      writeUploadAttemptArtifacts(signedEnvelope);
-      return originalSend(...params);
+      attemptedFolio = writeUploadAttemptArtifacts(signedEnvelope);
+      return originalSend.apply(this, params);
     });
+
+  return {
+    spy,
+    getAttemptedFolio: () => attemptedFolio,
+  };
 }
 
-function writeUploadAttemptArtifacts(signedEnvelope: string): void {
+function writeUploadAttemptArtifacts(signedEnvelope: string): string {
   const folio = extractXmlValue(signedEnvelope, 'Folio') ?? 'unknown';
   const artifactDir = resolveProjectPath(
     `secure/real-sii-tests/artifacts/${folio}`,
@@ -474,6 +532,13 @@ function writeUploadAttemptArtifacts(signedEnvelope: string): void {
   if (dteXml) {
     writeFileSync(join(artifactDir, 'signed-dte-attempt.xml'), dteXml);
   }
+
+  return folio;
+}
+
+interface BoletaUploadCapture {
+  spy: jest.SpyInstance;
+  getAttemptedFolio: () => string | undefined;
 }
 
 function writeLastUploadError(body: unknown): void {

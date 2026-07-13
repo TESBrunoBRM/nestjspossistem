@@ -15,7 +15,6 @@ export class FiscalController {
     return {
       engine: 'sii-engine',
       custodyMode: this.custodyService.mode(),
-      simpleApiEnabled: false,
       status: 'ok',
     };
   }

@@ -1,0 +1,31 @@
+services:
+  app:
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV: production
+      API_KEY_FRONTEND_FILE: /run/secrets/api_key
+      CORS_ORIGIN: ${CORS_ORIGIN:?Define CORS_ORIGIN in .env}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-false}
+      AWS_FISCAL_DDB_TABLE: ${AWS_FISCAL_DDB_TABLE:?Define AWS_FISCAL_DDB_TABLE in .env}
+      AWS_FISCAL_DDB_ENDPOINT: ${AWS_FISCAL_DDB_ENDPOINT:-}
+      AWS_FISCAL_S3_BUCKET: ${AWS_FISCAL_S3_BUCKET:?Define AWS_FISCAL_S3_BUCKET in .env}
+      AWS_FISCAL_S3_ENDPOINT: ${AWS_FISCAL_S3_ENDPOINT:-}
+      AWS_FISCAL_S3_PREFIX: ${AWS_FISCAL_S3_PREFIX:-fiscal-custody}
+      AWS_FISCAL_S3_FORCE_PATH_STYLE: ${AWS_FISCAL_S3_FORCE_PATH_STYLE:-false}
+      AWS_FISCAL_SSM_ENDPOINT: ${AWS_FISCAL_SSM_ENDPOINT:-}
+      AWS_FISCAL_SSM_PREFIX: ${AWS_FISCAL_SSM_PREFIX:-/business-app-sii/fiscal}
+    secrets:
+      - api_key
+
+secrets:
+  api_key:
+    file: ${API_KEY_FILE:-./secrets/api-key.txt}

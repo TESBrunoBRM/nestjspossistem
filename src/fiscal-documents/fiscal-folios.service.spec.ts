@@ -10,6 +10,7 @@ import { FiscalCustodyService } from '../fiscal-storage/fiscal-custody.service';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
 import { FiscalFolioProvider } from './fiscal-folio.provider';
 import { FiscalFoliosService } from './fiscal-folios.service';
+import { TEST_CAF_AUTHORIZATION_DATE } from '../../test/support/fiscal-fixtures';
 
 const context: IssuerContext = {
   environment: SiiEnvironment.Certificacion,
@@ -75,7 +76,7 @@ describe('FiscalFoliosService', () => {
       tipoDTE: TipoDTE.BoletaElectronica,
       rangeStart: 1,
       rangeEnd: 5,
-      fechaAutorizacion: '2026-01-01',
+      fechaAutorizacion: TEST_CAF_AUTHORIZATION_DATE,
     });
     expectPublicPayloadSafe(result);
   });
@@ -87,7 +88,7 @@ describe('FiscalFoliosService', () => {
   });
 
   it('gets public folio status', async () => {
-    await importCaf(service, '11111111-1', 1, 3, todayIsoDate());
+    await importCaf(service, '11111111-1', 1, 3);
 
     const result = await service.getStatus({
       ...contextDto,
@@ -169,11 +170,10 @@ function importCaf(
   rutEmisor: string,
   start: number,
   end: number,
-  fechaAutorizacion?: string,
 ) {
   return service.importCaf({
     context: contextDto,
-    cafXml: cafXml(rutEmisor, start, end, fechaAutorizacion),
+    cafXml: cafXml(rutEmisor, start, end),
   });
 }
 
@@ -185,12 +185,7 @@ function expectPublicPayloadSafe(body: unknown): void {
   );
 }
 
-function cafXml(
-  rutEmisor: string,
-  start: number,
-  end: number,
-  fechaAutorizacion = '2026-01-01',
-): string {
+function cafXml(rutEmisor: string, start: number, end: number): string {
   const keys = forge.pki.rsa.generateKeyPair(512);
   const privateKeyAsn1 = forge.pki.privateKeyToAsn1(keys.privateKey);
   const privateKeyDer = forge.asn1.toDer(privateKeyAsn1).getBytes();
@@ -212,7 +207,7 @@ function cafXml(
       <RS>EMISOR TEST</RS>
       <TD>39</TD>
       <RNG><D>${start}</D><H>${end}</H></RNG>
-      <FA>${fechaAutorizacion}</FA>
+      <FA>${TEST_CAF_AUTHORIZATION_DATE}</FA>
       <RSAPK>
         <M>${rsapkModulus}</M>
         <E>${rsapkExponent}</E>
@@ -224,14 +219,6 @@ function cafXml(
   <RSASK>${rsask}</RSASK>
   <RSAPUBK>${rsapubk}</RSAPUBK>
 </AUTORIZACION>`;
-}
-
-function todayIsoDate(): string {
-  const today = new Date();
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(
-    today.getDate(),
-  )}`;
 }
 
 function toEvenLengthHex(value: string): string {

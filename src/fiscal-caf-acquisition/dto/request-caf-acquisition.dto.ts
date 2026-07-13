@@ -23,6 +23,8 @@ export const ALLOWED_CAF_ACQUISITION_TIPO_DTE = [
   TipoDTE.NotaCredito,
 ] as const;
 
+export const MAX_CAF_ACQUISITION_QUANTITY = 50;
+
 export class RequestCafAcquisitionDto {
   @ValidateNested()
   @Type(() => IssuerContextDto)
@@ -36,7 +38,7 @@ export class RequestCafAcquisitionDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(1000)
+  @Max(MAX_CAF_ACQUISITION_QUANTITY)
   quantity: number;
 
   @IsOptional()

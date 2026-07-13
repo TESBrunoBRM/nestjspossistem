@@ -2,18 +2,6 @@ import 'reflect-metadata';
 import { validateEnv } from './env.validation';
 
 describe('validateEnv', () => {
-  it('rejects legacy external API variables', () => {
-    const legacyKey = ['SIMPLE', 'API_BASE_URL'].join('');
-
-    expect(() =>
-      validateEnv({
-        NODE_ENV: 'test',
-        API_KEY_FRONTEND: 'test-key',
-        [legacyKey]: 'https://provider.example',
-      }),
-    ).toThrow('variables externas heredadas no permitidas');
-  });
-
   it('rejects fixed fiscal bootstrap variables in production', () => {
     expect(() =>
       validateEnv({

@@ -15,8 +15,9 @@ import {
   buildEnvioDteXml,
   buildEnvioBoletaXml,
   buildTedXml,
+  formatSiiTimestamp,
   isBoletaTipoDTE,
-  LegacySiiClient,
+  DteSiiClient,
   signDteDocument,
   signEnvelope,
   signTed,
@@ -27,6 +28,7 @@ import {
   validateDteDocument,
   pollOnce,
   parseSendStatus,
+  resolveBoletaAuthScope,
   buildPrintedSampleArtifact,
   validateEdgeFiscalProvision,
   toPublicEdgeFiscalProvision,
@@ -46,7 +48,7 @@ import { IssuerContextDto } from '../fiscal/dto/issuer-context.dto';
 import { FiscalTokenProvider } from '../fiscal/fiscal-token.provider';
 import { sanitizePublicPayload } from '../common/security/sensitive-redaction.util';
 import { EmitBoletaDto } from './dto/emit-boleta.dto';
-import { EmitLegacyDteDto } from './dto/emit-legacy-dte.dto';
+import { EmitDteDto } from './dto/emit-dte.dto';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
 import { FiscalDocumentRepository } from './fiscal-document.repository';
 import { CreateEdgeProvisionDto } from './dto/create-edge-provision.dto';
@@ -56,7 +58,7 @@ export class FiscalDocumentService {
   private readonly boletaClient = new BoletaSiiClient({
     userAgent: 'Mozilla/4.0 (compatible; PROG 1.0; Windows NT 5.0)',
   });
-  private readonly legacyClient = new LegacySiiClient({
+  private readonly dteClient = new DteSiiClient({
     userAgent: 'Mozilla/4.0 (compatible; PROG 1.0; Windows NT 5.0)',
   });
   private readonly inFlight = new Set<string>();
@@ -119,6 +121,7 @@ export class FiscalDocumentService {
         emisor: {
           ...input.emisor,
           rutEmisor: context.rutEmisor,
+          rznSoc: assignment.caf.da.razonSocial,
         },
         receptor: input.receptor ?? {
           rutRecep: '66666666-6',
@@ -178,10 +181,13 @@ export class FiscalDocumentService {
         assignment.caf,
         'sobre firmado EnvioBOLETA',
       );
-      const token = await this.tokenProvider.getToken(
-        context,
-        this.signingProvider,
-      );
+      const token =
+        resolveBoletaAuthScope(context.environment) === 'boleta_rest'
+          ? await this.tokenProvider.getBoletaToken(
+              context,
+              this.signingProvider,
+            )
+          : await this.tokenProvider.getToken(context, this.signingProvider);
       const result = await this.sendBoletaToSii(
         signedEnvelope,
         context,
@@ -218,13 +224,13 @@ export class FiscalDocumentService {
     }
   }
 
-  async emitirLegacyDte(dto: EmitLegacyDteDto, expectedTipoDTE: number) {
+  async emitirDte(dto: EmitDteDto, expectedTipoDTE: number) {
     const context = await this.contextResolver.resolve(dto.context);
     const input = dto.document as unknown as DteDocument;
 
-    this.assertLegacyDteType(input, expectedTipoDTE);
+    this.assertDteType(input, expectedTipoDTE);
     this.assertDocumentRutMatchesContext(input, context.rutEmisor);
-    this.assertLegacyBusinessRules(input);
+    this.assertDteBusinessRules(input);
     this.assertReferencesForNotes(input);
 
     const cert = await this.signingProvider.getSigningMaterial(context);
@@ -255,11 +261,12 @@ export class FiscalDocumentService {
         emisor: {
           ...input.emisor,
           rutEmisor: context.rutEmisor,
+          rznSoc: assignment.caf.da.razonSocial,
         },
       };
 
       validateDteDocument(document, context, assignment.caf);
-      this.assertLegacyBusinessRules(document);
+      this.assertDteBusinessRules(document);
       this.assertReferencesForNotes(document);
 
       const signatureTimestamp = formatSiiTimestamp();
@@ -278,7 +285,7 @@ export class FiscalDocumentService {
         frmt,
         signatureTimestamp,
       );
-      const dteXml = normalizeLegacyDteXml(
+      const dteXml = normalizeDteXml(
         buildDteXml(document, tedXml),
         signatureTimestamp,
       );
@@ -316,7 +323,7 @@ export class FiscalDocumentService {
         context,
         this.signingProvider,
       );
-      const result = await this.legacyClient.send(
+      const result = await this.dteClient.send(
         signedEnvelope,
         context,
         token.token,
@@ -434,7 +441,11 @@ export class FiscalDocumentService {
     });
   }
 
-  async getSendStatus(idOrTrackId: string, dto: IssuerContextDto) {
+  async getSendStatus(
+    idOrTrackId: string,
+    dto: IssuerContextDto,
+    forceBoleta = false,
+  ) {
     const context = await this.contextResolver.resolve(dto);
 
     let record = this.repository.findById(idOrTrackId);
@@ -442,18 +453,15 @@ export class FiscalDocumentService {
       record = this.repository.findByTrackId(idOrTrackId);
     }
 
-    const token = await this.tokenProvider.getToken(
-      context,
-      this.signingProvider,
-    );
-
     const trackIdToQuery = record?.trackId || idOrTrackId;
     const attempt = record ? record.attempts : 0;
-
-    const client =
-      record && isBoletaTipoDTE(record.tipoDTE)
-        ? this.boletaClient
-        : this.legacyClient;
+    const isBoleta =
+      forceBoleta || Boolean(record && isBoletaTipoDTE(record.tipoDTE));
+    const token =
+      isBoleta && resolveBoletaAuthScope(context.environment) === 'boleta_rest'
+        ? await this.tokenProvider.getBoletaToken(context, this.signingProvider)
+        : await this.tokenProvider.getToken(context, this.signingProvider);
+    const client = isBoleta ? this.boletaClient : this.dteClient;
     const pollResult = await pollOnce(
       trackIdToQuery,
       { context, token: token.token },
@@ -473,7 +481,7 @@ export class FiscalDocumentService {
   }
 
   async getBoletaStatus(idOrTrackId: string, dto: IssuerContextDto) {
-    return this.getSendStatus(idOrTrackId, dto);
+    return this.getSendStatus(idOrTrackId, dto, true);
   }
 
   async getDteStatus(internalId: string, dto: IssuerContextDto) {
@@ -484,7 +492,7 @@ export class FiscalDocumentService {
     }
     if (isBoletaTipoDTE(record.tipoDTE)) {
       throw new BadRequestException(
-        'La consulta estado DTE legacy no aplica a boletas; use estado de envio por trackId.',
+        'La consulta de estado DTE no aplica a boletas; use estado de envio por trackId.',
       );
     }
 
@@ -495,7 +503,7 @@ export class FiscalDocumentService {
     const cert = await this.signingProvider.getSigningMaterial(context);
     const rutConsultante = splitRut(cert.rutFirmante);
     const rutReceptor = splitRut(record.document.receptor.rutRecep);
-    const result = await this.legacyClient.queryDteStatus(
+    const result = await this.dteClient.queryDteStatus(
       {
         rutConsultante: rutConsultante.rut,
         dvConsultante: rutConsultante.dv,
@@ -581,10 +589,7 @@ export class FiscalDocumentService {
     }
   }
 
-  private assertLegacyDteType(
-    document: DteDocument,
-    expectedTipoDTE: number,
-  ): void {
+  private assertDteType(document: DteDocument, expectedTipoDTE: number): void {
     const tipoDTE = Number(document.idDoc?.tipoDTE);
     if (tipoDTE !== expectedTipoDTE) {
       throw new BadRequestException(
@@ -678,7 +683,7 @@ export class FiscalDocumentService {
     }
   }
 
-  private assertLegacyBusinessRules(document: DteDocument): void {
+  private assertDteBusinessRules(document: DteDocument): void {
     const tipoDTE = Number(document.idDoc?.tipoDTE);
 
     if (
@@ -780,10 +785,7 @@ function normalizeBoletaDteXml(
   );
 }
 
-function normalizeLegacyDteXml(
-  dteXml: string,
-  signatureTimestamp: string,
-): string {
+function normalizeDteXml(dteXml: string, signatureTimestamp: string): string {
   if (dteXml.includes('<TmstFirma>')) {
     return dteXml;
   }
@@ -957,15 +959,6 @@ function decodeHtmlEntities(value: string): string {
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'");
-}
-
-function formatSiiTimestamp(date = new Date()): string {
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-    date.getDate(),
-  )}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
-    date.getSeconds(),
-  )}`;
 }
 
 function assertEmbeddedTedSignature(

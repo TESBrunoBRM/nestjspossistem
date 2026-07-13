@@ -49,6 +49,7 @@ describe('FiscalPollingService', () => {
           provide: FiscalTokenProvider,
           useValue: {
             getToken: jest.fn(),
+            getBoletaToken: jest.fn(),
           },
         },
         {

@@ -132,17 +132,6 @@ class EnvironmentVariables {
 }
 
 export function validateEnv(config: Record<string, unknown>) {
-  const legacyExternalApiPrefix = ['SIMPLE', 'API_'].join('');
-  const legacySimpleApiKeys = Object.keys(config).filter((key) =>
-    key.startsWith(legacyExternalApiPrefix),
-  );
-
-  if (legacySimpleApiKeys.length > 0) {
-    throw new Error(
-      `Error de validacion de variables de entorno: variables externas heredadas no permitidas (${legacySimpleApiKeys.join(', ')})`,
-    );
-  }
-
   const validatedConfig = plainToInstance(EnvironmentVariables, config, {
     enableImplicitConversion: true,
   });
