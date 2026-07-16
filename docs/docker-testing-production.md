@@ -17,7 +17,7 @@ Estado: implementado.
 - [x] Ejecutar smoke de custodia dentro de Docker.
 - [x] Migrar manualmente PFX/password locales a `secrets/`.
 - [x] Ejecutar factura 33 con CAF custodiado contra SII Certificacion: folio 17 aceptado.
-- [x] Revalidar el smoke completo de factura 33 con polling corregido.
+- [ ] Revalidar el smoke completo de factura 33 con polling corregido; el folio 17 aceptado no debe reenviarse.
 - [x] Ejecutar boleta 39 con CAF custodiado contra SII Certificacion: folio 34 aceptado sin reparos.
 - [x] Retirar runners MiniStack, loaders `.env` y comandos legacy.
 - [x] Unificar adquisicion, consulta y emision 33/39 bajo `sii:cert`.

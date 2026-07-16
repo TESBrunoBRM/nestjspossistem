@@ -1,7 +1,7 @@
 # Estado tecnico de business-app-sii
 
 Estado: fuente canonica
-Actualizado: 2026-07-12
+Actualizado: 2026-07-15
 
 Este documento contiene solo avances, validaciones y pendientes propios de `business-app-sii` y su motor `sii-engine`. La arquitectura comercial y la integracion con `business_app_back` se mantienen en [business_app_back/docs/sii-integration-proposal.md](../../business_app_back/docs/sii-integration-proposal.md).
 
@@ -10,7 +10,11 @@ unicamente en [real-sii-testing.md](./real-sii-testing.md).
 
 ## Resumen ejecutivo
 
-La plataforma ya tiene implementacion para custodia fiscal por emisor, obtencion/importacion de CAF, boleta 39, factura 33, consultas de envio y consulta DTE. El 2026-07-10 se elimino la copia de `sii-engine` que estaba dentro de este repositorio; el unico motor canonico es ahora el repositorio hermano `../sii-engine`.
+La plataforma ya tiene implementacion para custodia fiscal por emisor, obtencion/importacion de CAF, construccion y firma de DTE, boleta 39, factura 33, consultas de envio y consulta DTE. Boleta 39 y factura 33 tienen evidencia real de aceptacion en SII Certificacion. Los demas codigos declarados tienen grados distintos de implementacion, pero no deben presentarse como documentos productivos ni certificados; la matriz exacta se mantiene en [Estado por documento SII](#estado-por-documento-sii).
+
+El nucleo fiscal es una base preproductiva avanzada, no un MVP comercial completo. La custodia AWS-compatible y la asignacion atomica de folios son una buena base, pero el lifecycle de documentos, tracking, polling e idempotencia de emision sigue dependiendo de memoria de proceso. Tambien faltan autenticacion service-to-service vinculada al tenant/emisor, cobertura obligatoria de XSD oficiales, representacion impresa final y el cierre formal del programa de certificacion.
+
+El 2026-07-10 se elimino la copia de `sii-engine` que estaba dentro de este repositorio; el unico motor canonico es ahora el repositorio hermano `../sii-engine`.
 
 El motor separado y `business-app-sii` pasan typecheck. El motor pasa 120 tests en Linux Docker, la aplicacion pasa 144 unit tests y 16 E2E, y MiniStack valida custodia persistente en S3, DynamoDB y SSM. Los fixtures CAF usan vigencia relativa y los smokes normales rechazan errores, reparos, estados desconocidos y estados DTE inconclusos. La reduccion respecto del conteo anterior corresponde exclusivamente a la eliminacion del Hello World y la prueba defensiva de SimpleAPI ya retirado.
 
@@ -97,10 +101,11 @@ la respuesta fiscal cruda.
 
 - boleta 39 con TED, `EnvioBOLETA` y transporte explicito por ambiente
 - factura 33 mediante `EnvioDTE`
-- endpoints declarados para 34, 46, 52, 56 y 61
+- ruta de boleta compartida para 39/41 y endpoints declarados para 34, 46, 52, 56 y 61
+- validaciones y pruebas internas desiguales para los codigos no certificados; el detalle de madurez se registra una sola vez en la matriz de este documento
 - consulta de factura/RVD por `QueryEstUp` y factura por `QueryEstDte`
 - consulta de boleta por `QueryEstUp`/`QueryEstDte` en Certificacion y REST en Produccion
-- artefacto de muestra impresa con payload TED/PDF417
+- metadata de muestra impresa con payload TED/PDF417; no es todavia un PDF ni una representacion termica tributaria final
 - almacenamiento local de artefactos de smoke bajo `secure/real-sii-tests/artifacts`
 - ante un upload incierto, el smoke conserva el folio y sobre firmado, informa
   el comando exacto de reconciliacion y evita un segundo fallo en cascada por
@@ -144,7 +149,7 @@ Los CAF sinteticos ahora usan el dia anterior a la ejecucion y los certificados 
 
 #### Resuelto: topologia y cobertura del motor
 
-El workspace usa exclusivamente `../sii-engine`; `node_modules/sii-engine` fue verificado contra esa ruta y ya no existe un motor dentro de `business-app-sii`. La suite propia del motor cubre CAF, TED, Latin-1, XMLDSig, transportes y parsers SII. La cobertura de canales y verificacion XMLDSig eleva el total a 114 tests verdes en Linux Docker.
+El workspace usa exclusivamente `../sii-engine`; `node_modules/sii-engine` fue verificado contra esa ruta y ya no existe un motor dentro de `business-app-sii`. La suite propia del motor cubre CAF, TED, Latin-1, XMLDSig, transportes y parsers SII. La cobertura vigente es de 25 archivos y 120 tests.
 
 El typecheck general tambien esta verde despues de alinear los contratos entre ambos repositorios. CI debe conservar como gate la verificacion del destino del enlace para impedir que se reintroduzca una copia local.
 
@@ -166,9 +171,11 @@ El motor canonico ya codifica XML/TED en ISO-8859-1, extrae correctamente nodos 
 
 ## Resultados ejecutados
 
+Ultima verificacion local sin contactar al SII: 2026-07-15.
+
 | Validacion                                 | Resultado                             | Diagnostico                                                                                             |
 | ------------------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Build por script Corepack                  | Fallo de entorno                      | `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` en el shim local                                               |
+| Verificacion por script `pnpm`             | Fragilidad de entorno                 | La restauracion automatica local puede fallar por politica de build de dependencias (`ERR_PNPM_IGNORED_BUILDS`) |
 | Build JS directo del `sii-engine` separado | Paso                                  | CJS, ESM y declaraciones generados correctamente                                                        |
 | Typecheck aislado `sii-engine`             | Paso                                  | El source del motor compila                                                                             |
 | Tests `sii-engine`                         | 25 archivos; 120/120 pasan            | Incluye estrategias separadas de boleta, contrato wire Maullin, polling EPR, XMLDSig, DTE/factura y RVD |
@@ -261,61 +268,113 @@ Fuentes oficiales contrastadas:
 - [x] Permitir reanudar consultas desde un `trackId` persistido sin exigir un
       sobre fresco ni repetir el upload.
 
-## Estado por capacidad
+## Estado por documento SII
 
-| Capacidad                           | Estado actual                                                                         |
-| ----------------------------------- | ------------------------------------------------------------------------------------- |
-| Custodia por emisor                 | Implementada; regresion MiniStack verde                                               |
-| Token SII                           | DTE para factura/RVD y boleta Certificacion; boleta REST en Produccion                |
-| Scraping CAF 39                     | Hito previo logrado                                                                   |
-| Scraping CAF 33                     | Validado realmente: CAF descargado e importado en MiniStack                           |
-| Boleta 39                           | Maullin/DTE validado realmente en Certificacion; Rahue/REST reservado para Produccion |
-| Factura 33                          | Folio 17 aceptado realmente; revalidacion automatizada pendiente                      |
-| QueryEstUp                          | Implementado para factura, RVD y boleta en Certificacion                              |
-| QueryEstDte                         | Implementado para factura                                                             |
-| Consultas de boleta                 | `QueryEstUp`/`QueryEstDte` en Certificacion; REST en Produccion                       |
-| Persistencia de documentos/tracking | In-memory; pendiente para produccion                                                  |
-| RVD automatico                      | Pendiente                                                                             |
-| XSD oficial y evidencia formal      | Pendiente                                                                             |
+Esta es la fuente unica de verdad sobre el grado de implementacion de cada codigo. "Validado real" significa que existe evidencia de aceptacion en SII Certificacion; una ruta HTTP o una prueba con transporte mockeado no equivale a esa validacion.
+
+| Codigo | Documento | Estado actual | Evidencia o brecha principal |
+| -----: | --------- | ------------- | ---------------------------- |
+| 33 | Factura electronica | Implementado; validado real | Folio 17 aceptado en SII Certificacion; falta repetir la regresion automatizada del polling corregido |
+| 39 | Boleta electronica | Implementado; validado real | Folios 34 y 36 aceptados sin reparos mediante el canal de Certificacion seleccionado |
+| 34 | Factura no afecta o exenta | Implementado sin validacion integral | Endpoint y camino generico `EnvioDTE`; falta prueba positiva completa, XSD, CAF operativo y certificacion real |
+| 41 | Boleta no afecta o exenta | Implementado sin validacion integral | Comparte ruta y motor de boleta; falta prueba positiva completa, campos vigentes, CAF operativo y certificacion real |
+| 46 | Factura de compra | Parcial | Emision unitaria con transporte simulado; faltan reglas tributarias completas, XSD y certificacion real |
+| 52 | Guia de despacho | Parcial | Emision unitaria y validaciones basicas simuladas; faltan campos de transporte vigentes, XSD y certificacion real |
+| 56 | Nota de debito | Parcial | Endpoint y validaciones genericas; no hay una emision positiva integral ni certificacion real |
+| 61 | Nota de credito | Parcial | Endpoint y exigencia de referencia; no hay una emision positiva integral ni certificacion real |
+| 43 | Liquidacion-Factura electronica | Sin implementar | No existe en el enum, DTO, endpoint ni pruebas del producto |
+| 110 | Factura de exportacion | Sin implementar / fuera del alcance actual | Sin modelo, builder especializado, endpoint ni pruebas |
+| 111 | Nota de debito de exportacion | Sin implementar / fuera del alcance actual | Sin modelo, builder especializado, endpoint ni pruebas |
+| 112 | Nota de credito de exportacion | Sin implementar / fuera del alcance actual | Sin modelo, builder especializado, endpoint ni pruebas |
+
+Los formatos oficiales usados para mantener esta matriz son [DTE version 2.5 de febrero de 2026](../docs_sii/DocumentosFormato/formato_dte_202602.pdf) y [Boleta version 4.2 de septiembre de 2025](../docs_sii/DocumentosFormato/formato_boleta_electronica.pdf).
+
+## Estado por sistema fiscal complementario
+
+| Sistema | Estado actual | Alcance pendiente |
+| ------- | ------------- | ----------------- |
+| Custodia por emisor | Implementada | Endurecer IAM/KMS, auditoria, rotacion y recuperacion operativa |
+| CAF y folios | Importacion, adquisicion y reserva disponibles; asignacion DynamoDB atomica | La adquisicion automatica admite 33, 39, 41, 56 y 61; 34, 46 y 52 dependen de importacion manual |
+| Token y transporte | Implementado para DTE y estrategias de boleta por ambiente | Mantener regresiones reales controladas y trazabilidad sanitaria de transporte |
+| Estado de envio/DTE | `QueryEstUp`, `QueryEstDte` y parsers implementados | Polling durable, scheduler, backoff, rate limits y recuperacion entre reinicios |
+| Idempotencia de emision | Proteccion en memoria durante solicitudes concurrentes | Clave durable, resultado reutilizable y unicidad por tenant/venta/tipo DTE |
+| Persistencia de documentos | En memoria | Persistir solicitud, documento, XML firmado, envelope, intentos, `trackId` y snapshots de estado |
+| Validacion XSD | Utilidad disponible en el flujo de retry | Gate obligatorio para emisiones normales, fixtures golden y evidencia por version de schema |
+| Representacion impresa | Metadata y payload TED/PDF417 | Renderer PDF/termico conforme, copias cedibles cuando apliquen y muestras de certificacion |
+| RVD | Builder, envio manual y consulta disponibles; secuencia en memoria | No es obligacion corriente desde agosto de 2022; mantener solo compatibilidad historica o casos expresos |
+| B2B/recepcion DTE | Primitive de `RespuestaDTE` en el motor | Recepcion, intercambio, acuses, aceptacion/rechazo comercial, correo y auditoria |
+| Registro de aceptacion o reclamo | Sin implementar | Consulta y acciones autorizadas para DTE recibidos |
+| AEC/RPETC/cesion | Sin implementar | Fase posterior para financiamiento y cesion de facturas |
+| Certificacion formal | Evidencia real aislada para 33 y 39 | Set de pruebas, simulacion, intercambio, muestras impresas, declaracion y autorizacion por alcance |
+
+El [SII elimino la obligacion de enviar RVD desde agosto de 2022](https://www.sii.cl/noticias/2022/040822noti01rp.htm). Por eso RVD automatico no es un bloqueo regulatorio general del MVP actual, aunque el soporte existente puede servir para periodos historicos o situaciones particulares.
+
+## Diagnostico de preparacion productiva
+
+### Fundaciones aprovechables
+
+- separacion correcta entre host fiscal privado y motor reusable
+- custodia AWS-compatible de certificados, passwords y CAF
+- cifrado server-side y soporte de KMS/SSM
+- asignacion atomica de folios con condicion en DynamoDB
+- imagen Docker endurecida y runtime separado de acceptance
+- sanitizacion de respuestas y pruebas locales amplias
+- recuperacion controlada de uploads inciertos para 33/39
+
+### Bloqueos para un MVP comercial
+
+1. El lifecycle fiscal no es durable. Un reinicio pierde documentos, tracking, secuencias RVD, polling e idempotencia de proceso.
+2. La API key estatica no identifica ni autoriza un tenant/emisor concreto. `tenantId` y `rutEmisor` llegan en la solicitud y deben quedar vinculados criptograficamente a la identidad service-to-service.
+3. No existe worker durable para envio, polling, backoff, dead-letter y remediacion manual.
+4. La validacion XSD oficial no es un gate de toda emision normal.
+5. La respuesta `printed-sample` no genera la representacion tributaria final.
+6. Los DTO/builders no cubren todas las zonas condicionales vigentes de DTE 2.5 y Boleta 4.2, incluidos medio de pago, proveedor de software, georreferenciacion, descuentos/recargos, impuestos especiales y datos completos de transporte.
+7. Faltan observabilidad operativa, alertas, retencion, backup y recuperacion de evidencias fiscales.
+8. La integracion comercial POS, el outbox de ventas y la autoridad de calculo pertenecen a `business_app_back` y se diagnostican exclusivamente en [su propuesta canonica](../../business_app_back/docs/sii-integration-proposal.md).
+
+Conclusion de release: `business-app-sii` es una base fiscal preproductiva avanzada, pero no debe considerarse listo para un MVP comercial multiempresa mientras permanezcan los bloqueos anteriores.
 
 ## Proximos hitos
 
-### Hito 1: mantener confiabilidad del gate de pruebas
+### Hito 1: lifecycle, idempotencia y seguridad productiva
 
-- mantener fechas fiscales sinteticas relativas o reloj controlado
-- mantener las aserciones de rechazo, reparo y estado DTE final
-- conservar typecheck general como gate separado
-- verificar en CI que `sii-engine` resuelve exclusivamente a `../sii-engine`
-- fallar CI si reaparece `business-app-sii/sii-engine`
-- mantener cada E2E con precondiciones independientes
+- persistir solicitudes, documentos, envelopes, intentos, `trackId` y snapshots de estado
+- establecer unicidad durable por tenant, origen comercial y tipo DTE
+- conservar la asignacion atomica de folios y agregar locks/leases durables donde corresponda
+- implementar workers de envio y polling con backoff, rate limits y dead-letter
+- reemplazar la API key de desarrollo por identidad service-to-service con scopes y vinculacion tenant/emisor
+- auditar toda operacion por tenant, emisor, ambiente, request y actor interno
 
-### Hito 2: cobertura fiscal del core
+### Hito 2: conformidad de formato y evidencia
 
-- mantener tests de CAF con atributos XML, `FRMA` real y TED Latin-1
-- golden fixtures de factura 33 y validacion XSD
-- XMLDSig verificable para DTE y `SetDTE`
-- casos de aceptacion, rechazo, reparo y estado transitorio
+- validar todas las emisiones normales contra XSD oficiales versionados
+- mantener golden fixtures y casos con acentos, limites y zonas condicionales
+- completar los campos aplicables de DTE 2.5 y Boleta 4.2
+- generar representacion PDF/termica verificable con PDF417
+- conservar evidencia cifrada e inmutable de XML, envelope, respuestas y muestra impresa
 
-### Hito 3: factura 33 real aceptada
+### Hito 3: programa documental minimo del POS
 
-- estabilizar adquisicion/importacion de CAF 33
-- ejecutar emision real con datos tributarios autorizados
-- exigir estado final aceptado, no solo `trackId`
-- conservar XML, envelope, respuesta y metadata como evidencia protegida
+- mantener regresiones reales controladas de 33 y 39 sin reutilizar folios
+- cerrar prueba positiva, CAF, XSD y certificacion de 34 y 41
+- cerrar end-to-end y certificacion de 61 y 56 para correcciones
+- incorporar 52 solo cuando el producto habilite despacho documentado
+- alinear el orden comercial y las precondiciones con la [fuente canonica de integracion POS](../../business_app_back/docs/sii-integration-proposal.md)
 
-### Hito 4: lifecycle durable
+### Hito 4: operacion y escala
 
-- persistir documentos, envelopes, intentos y snapshots de estado
-- locks transaccionales para folios
-- workers de polling con backoff y rate limits
-- auditoria por tenant, emisor, ambiente y request
+- alertas por CAF bajo, certificado proximo a vencer, rechazo, reparo y tracks estancados
+- dashboards de volumen, latencia SII, aceptacion, rechazo y reintentos por emisor
+- politicas de backup, retencion, integridad, recuperacion y continuidad operacional
+- despliegue privado, egress controlado al SII y escalado horizontal seguro
+- mantener RVD solo como compatibilidad historica o requerimiento particular documentado
 
-### Hito 5: cierre de boleta y operacion
+### Hito 5: ampliacion fiscal posterior
 
-- RVD diario automatico y `SecEnvio` durable
-- conciliacion de boletas con RVD
-- alertas por CAF/certificado, rechazo, reparo y tracks pendientes
-- autenticacion service-to-service en reemplazo de la API key de desarrollo
+- evaluar 46 y 43 segun los segmentos comerciales reales
+- incorporar 110, 111 y 112 solo si el producto aborda exportacion
+- implementar recepcion/B2B, Registro de Aceptacion o Reclamo y Ley 19.983
+- incorporar AEC/RPETC, cesion y otros sistemas solo como modulos separados por alcance
 
 ## Limites
 
