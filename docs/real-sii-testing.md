@@ -1,11 +1,11 @@
 # Runbook de pruebas fiscales
 
 Estado: fuente unica de verdad para ejecutar comandos fiscales de prueba.
-Actualizado: 2026-07-12.
+Actualizado: 2026-07-16.
 
-Este documento define como probar factura 33 y boleta 39, adquirir o consultar
-CAF y recuperar folios reservados. Los demas documentos deben enlazar este
-runbook y no repetir comandos operativos.
+Este documento define como probar DTE 33, 34, 39, 41, 56 y 61, adquirir o
+consultar CAF y recuperar folios reservados. Los demas documentos deben enlazar
+este runbook y no repetir comandos operativos.
 
 La arquitectura de las imagenes se mantiene en
 [docker-testing-production.md](./docker-testing-production.md) y los resultados
@@ -35,7 +35,7 @@ Despues de cambiar codigo, reconstruir la imagen de aceptacion. En la primera
 ejecucion, validar tambien la custodia:
 
 ```powershell
-docker compose -f compose.yaml -f compose.certification.yaml build emit-factura33 emit-boleta39
+docker compose -f compose.yaml -f compose.certification.yaml build emit-factura33 emit-boleta39 emit-dte caf-acquisition caf-check custody-test
 pnpm.cmd run sii:cert -- custody test
 ```
 
@@ -84,8 +84,8 @@ requiere una cuenta AWS para este flujo.
 | `retry send`             | Si, salvo trackId persistido | No reserva otro         | Enviar una vez o reanudar consultas             |
 | `down`                   | No                           | No                      | Detener contenedores conservando custodia       |
 
-Los valores admitidos por `--type` son `factura`, `boleta`, `33` y `39`.
-`--quantity` acepta entre 1 y 50, representa un maximo y solo aplica a
+Los valores admitidos por `--type` son `33`, `34`, `39`, `41`, `56`, `61` y sus aliases `factura`, `factura-exenta`, `boleta`, `boleta-exenta`, `nota-debito` y `nota-credito`.
+Para smokes reales usar `--quantity=1`. El parametro acepta entre 1 y 50, representa un maximo y solo aplica a
 `caf acquire`. El servicio envia `min(quantity, Maximo Autorizado)` al portal.
 `Folios Disponibles` es el stock ya descargado y no se usa como limite de la
 solicitud. Si el maximo informado es `0`, se intenta igualmente `quantity`; si
@@ -118,7 +118,7 @@ Timeouts opcionales en `.env`:
 
 ```plantuml
 @startuml
-title Emision normal de factura 33 o boleta 39
+title Emision normal de DTE 33, 34, 39, 41, 56 o 61
 actor Desarrollador as Dev
 participant "sii:cert" as CLI
 database MiniStack as Custodia
@@ -177,10 +177,35 @@ La segunda linea es condicional. Boleta usa token DTE, `EnvioBOLETA`, Maullin y
 explicita basada en token de boleta, Rahue y API REST; no existe fallback entre
 ambientes.
 
+### Tipos 34, 41, 56 y 61
+
+Ejecutar cada tipo de forma secuencial y solicitar un solo folio cuando no exista
+CAF activo:
+
+```powershell
+pnpm.cmd run sii:cert -- caf check --type=34
+pnpm.cmd run sii:cert -- caf acquire --type=34 --quantity=1
+pnpm.cmd run sii:cert -- emit --type=34
+```
+
+Reemplazar `34` por `41`, `56` o `61`. La linea `caf acquire` es condicional.
+No ejecutar adquisiciones ni emisiones en paralelo para el mismo emisor.
+
+Las notas controladas pueden emitirse desde una factura 33/34 aceptada con
+`POST /api/fiscal/documents/:sourceInternalId/credit-notes` o
+`POST /api/fiscal/documents/:sourceInternalId/debit-notes`. El origen debe tener
+estado DTE `DOK`; el servicio deriva la referencia SII y no acepta un origen de
+otro tenant/emisor.
+
 ## Recuperacion de folios
 
-La recuperacion aplica cuando un folio fue reservado y existe un artefacto
-firmado, pero no hay certeza de recepcion o falta completar su seguimiento.
+Si XSD, TED, firma o persistencia `PREPARED` falla antes del upload, el servicio
+libera de forma condicional solo el ultimo folio reservado. Si el upload ya pudo
+comenzar, el folio nunca se libera automaticamente.
+
+La recuperacion aplica cuando existe un artefacto firmado pero no hay certeza de
+recepcion o falta completar su seguimiento. Primero consultar/reconciliar; nunca
+repetir `emit` ni `retry send` ante un resultado incierto.
 
 ```plantuml
 @startuml

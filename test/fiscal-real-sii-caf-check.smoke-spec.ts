@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import { TipoDTE, type IssuerContext } from 'sii-engine';
+import { type IssuerContext } from 'sii-engine';
 import { FiscalCustodyService } from '../src/fiscal-storage/fiscal-custody.service';
 import { createFiscalTestApp } from './support/nest-test-app';
 import { optionalEnv, prepareRealSiiTestEnv } from './support/env-loader';
@@ -7,6 +7,7 @@ import {
   parseCertificationDteType,
   parseCertificationEnvironment,
   resolveCertificationTenantId,
+  SUPPORTED_CERTIFICATION_DTE_TYPES,
 } from './support/sii-certification-options';
 
 prepareRealSiiTestEnv();
@@ -84,8 +85,6 @@ describe(`Custodied CAF ${tipoDTE} precondition`, () => {
     expect(
       active.reduce((sum, entry) => sum + entry.remaining, 0),
     ).toBeGreaterThan(0);
-    expect([TipoDTE.FacturaElectronica, TipoDTE.BoletaElectronica]).toContain(
-      tipoDTE,
-    );
+    expect(SUPPORTED_CERTIFICATION_DTE_TYPES).toContain(tipoDTE);
   });
 });

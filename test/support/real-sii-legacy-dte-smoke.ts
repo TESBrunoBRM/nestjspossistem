@@ -9,7 +9,13 @@ import { FISCAL_SIGNING_PROVIDER } from '../../src/fiscal/fiscal-provider.tokens
 import { loadCertificateMaterialFromP12 } from '../../src/fiscal/fiscal-certificate.util';
 import { FiscalDocumentRepository } from '../../src/fiscal-documents/fiscal-document.repository';
 import { resolveProjectPath } from '../../src/common/utils/project-path.util';
-import { LegacySiiClient, SiiEnvironment, TipoDTE } from 'sii-engine';
+import {
+  DteSiiClient,
+  isBoletaTipoDTE,
+  SiiEnvironment,
+  TipoDTE,
+  type SendResult,
+} from 'sii-engine';
 import { createFiscalTestApp } from './nest-test-app';
 import { optionalEnv, prepareRealSiiTestEnv } from './env-loader';
 
@@ -93,10 +99,14 @@ export function runRealSiiLegacyDteSmoke(
     let app: INestApplication;
     let apiKey: string;
 
+    const singleScenarioType =
+      scenarios.length === 1 ? Number(scenarios[0].tipoDTE) : undefined;
     const tenantId =
       optionalEnv('REAL_SII_TEST_LEGACY_TENANT_ID') ||
-      optionalEnv('REAL_SII_TEST_TENANT_ID') ||
-      'real-sii-legacy-smoke';
+      (singleScenarioType
+        ? optionalEnv(`REAL_SII_TEST_DTE_${singleScenarioType}_TENANT_ID`) ||
+          `certification-dte${singleScenarioType}`
+        : optionalEnv('REAL_SII_TEST_TENANT_ID') || 'real-sii-legacy-smoke');
     const merchantId =
       optionalEnv('REAL_SII_TEST_MERCHANT_ID') || 'merchant-main';
     const branchId = optionalEnv('REAL_SII_TEST_BRANCH_ID') || 'branch-001';
@@ -291,7 +301,9 @@ export function runRealSiiLegacyDteSmoke(
           expect(emitData.trackId).toBeTruthy();
           expect(emitData.folio).toBeGreaterThan(0);
           expect(emitData.status).toBeTruthy();
-          expect(JSON.stringify(response.body)).not.toMatch(secretLeakPattern());
+          expect(JSON.stringify(response.body)).not.toMatch(
+            secretLeakPattern(),
+          );
 
           writeDebugArtifacts(app, scenario, {
             internalId,
@@ -316,7 +328,7 @@ export function runRealSiiLegacyDteSmoke(
             parseOptionalPositiveInt(
               optionalEnv('REAL_SII_TEST_LEGACY_STATUS_POLL_ATTEMPTS'),
               'REAL_SII_TEST_LEGACY_STATUS_POLL_ATTEMPTS',
-            ) ?? 6;
+            ) ?? 12;
           const delayMs =
             parseOptionalPositiveInt(
               optionalEnv('REAL_SII_TEST_LEGACY_STATUS_POLL_DELAY_MS'),
@@ -338,21 +350,23 @@ export function runRealSiiLegacyDteSmoke(
 
             lastStatusBody = response.body;
             statusData = responseData<SendStatusApiData>(response);
-            if (statusData.estadisticas) break;
+            const statistics = statusData.estadisticas;
+            const processed =
+              (statistics?.aceptados ?? 0) +
+              (statistics?.rechazados ?? 0) +
+              (statistics?.reparos ?? 0);
+            if (processed > 0) break;
           }
 
           expect(statusData).toBeDefined();
           statusData = statusData!;
           expect(statusData.trackId).toBe(emitted.trackId);
-          expect(statusData.estadisticas).toEqual(
-            expect.objectContaining({
-              aceptados: expect.any(Number),
-              rechazados: 0,
-              reparos: 0,
-            }),
-          );
           expect(statusData.estadisticas?.aceptados ?? 0).toBeGreaterThan(0);
-          expect(JSON.stringify(lastStatusBody)).not.toMatch(secretLeakPattern());
+          expect(statusData.estadisticas?.rechazados).toBe(0);
+          expect(statusData.estadisticas?.reparos).toBe(0);
+          expect(JSON.stringify(lastStatusBody)).not.toMatch(
+            secretLeakPattern(),
+          );
         });
 
         it(`queries ${scenario.label} DTE status and printed sample`, async () => {
@@ -363,23 +377,25 @@ export function runRealSiiLegacyDteSmoke(
             blocker,
           });
 
-          const dteStatusResponse = await request(testServer(app))
-            .get(`/api/fiscal/documents/${emitted.internalId}/dte-status`)
-            .set('x-api-key', apiKey)
-            .query({
-              tenantId,
-              rutEmisor,
-              environment,
-            })
-            .expect(200);
+          if (!isBoletaTipoDTE(scenario.tipoDTE)) {
+            const dteStatusResponse = await request(testServer(app))
+              .get(`/api/fiscal/documents/${emitted.internalId}/dte-status`)
+              .set('x-api-key', apiKey)
+              .query({
+                tenantId,
+                rutEmisor,
+                environment,
+              })
+              .expect(200);
 
-          const dteStatus = responseData<DteStatusApiData>(dteStatusResponse);
-          expect(dteStatus.tipoDTE).toBe(scenario.tipoDTE);
-          expect(dteStatus.folio).toBeGreaterThan(0);
-          expect(dteStatus.status).toBeTruthy();
-          expect(JSON.stringify(dteStatusResponse.body)).not.toMatch(
-            secretLeakPattern(),
-          );
+            const dteStatus = responseData<DteStatusApiData>(dteStatusResponse);
+            expect(dteStatus.tipoDTE).toBe(scenario.tipoDTE);
+            expect(dteStatus.folio).toBeGreaterThan(0);
+            expect(dteStatus.status).toBeTruthy();
+            expect(JSON.stringify(dteStatusResponse.body)).not.toMatch(
+              secretLeakPattern(),
+            );
+          }
 
           const printedSampleResponse = await request(testServer(app))
             .get(`/api/fiscal/documents/${emitted.internalId}/printed-sample`)
@@ -400,7 +416,9 @@ export function runRealSiiLegacyDteSmoke(
   });
 }
 
-export function commonEmisor(input: BuildDocumentInput): Record<string, unknown> {
+export function commonEmisor(
+  input: BuildDocumentInput,
+): Record<string, unknown> {
   return {
     rutEmisor: input.rutEmisor,
     rznSoc:
@@ -763,39 +781,53 @@ function forcedFolioFor(tipoDTE: number): number | undefined {
   );
 }
 
-type LegacySend = (
-  ...args: Parameters<LegacySiiClient['send']>
-) => ReturnType<LegacySiiClient['send']>;
+type DteSend = (
+  ...args: Parameters<DteSiiClient['send']>
+) => Promise<SendResult>;
 
 function captureLegacyUploadAttempts(
   scenario: RealSiiLegacyDteScenario,
 ): jest.SpyInstance {
   const originalSendCandidate: unknown = Object.getOwnPropertyDescriptor(
-    LegacySiiClient.prototype,
+    DteSiiClient.prototype,
     'send',
   )?.value;
 
   if (typeof originalSendCandidate !== 'function') {
-    throw new Error('No se pudo capturar LegacySiiClient.send original.');
+    throw new Error('No se pudo capturar DteSiiClient.send original.');
   }
 
-  const originalSend = originalSendCandidate as LegacySend;
+  const originalSend = originalSendCandidate as DteSend;
 
   return jest
-    .spyOn(LegacySiiClient.prototype, 'send')
+    .spyOn(DteSiiClient.prototype, 'send')
     .mockImplementation(async function (
-      this: LegacySiiClient,
-      ...params: Parameters<LegacySiiClient['send']>
+      this: DteSiiClient,
+      ...params: Parameters<DteSiiClient['send']>
     ) {
       const [signedEnvelope] = params;
       writeUploadAttemptArtifacts(scenario, signedEnvelope);
       try {
-        return await originalSend.apply(this, params);
+        const result: unknown = await Reflect.apply(originalSend, this, params);
+        assertSendResult(result);
+        writeLegacyUploadSuccessArtifacts(scenario, result);
+        return result;
       } catch (error) {
         writeLegacyUploadFailureArtifacts(scenario, error);
         throw error;
       }
     });
+}
+
+function assertSendResult(value: unknown): asserts value is SendResult {
+  if (
+    !isRecord(value) ||
+    typeof value.trackId !== 'string' ||
+    typeof value.status !== 'string' ||
+    typeof value.rawResponse !== 'string'
+  ) {
+    throw new Error('DteSiiClient.send devolvio un resultado invalido.');
+  }
 }
 
 function artifactDirFor(
@@ -824,7 +856,30 @@ function writeUploadAttemptArtifacts(
   if (tedXml) writeFileSync(join(artifactDir, 'ted-attempt.xml'), tedXml);
 
   const dteXml = extractXmlBlock(signedEnvelope, 'DTE');
-  if (dteXml) writeFileSync(join(artifactDir, 'signed-dte-attempt.xml'), dteXml);
+  if (dteXml)
+    writeFileSync(join(artifactDir, 'signed-dte-attempt.xml'), dteXml);
+}
+
+function writeLegacyUploadSuccessArtifacts(
+  scenario: RealSiiLegacyDteScenario,
+  result: { trackId: string; status: string },
+): void {
+  const artifactDir = resolveProjectPath(
+    'secure/real-sii-tests/artifacts/' + scenario.artifactSlug + '/last-upload',
+  );
+  mkdirSync(artifactDir, { recursive: true });
+  writeFileSync(
+    join(artifactDir, 'result.json'),
+    JSON.stringify(
+      {
+        trackId: result.trackId,
+        status: result.status,
+        capturedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 function writeLegacyUploadFailureArtifacts(
@@ -852,7 +907,7 @@ function writeLegacyUploadFailureArtifacts(
         message: error instanceof Error ? error.message : String(error),
         code:
           typeof error === 'object' && error !== null && 'code' in error
-            ? String((error as { code?: unknown }).code ?? '')
+            ? printableUnknown((error as { code?: unknown }).code)
             : undefined,
         hasRawResponse: Boolean(rawResponse),
       },
@@ -1012,6 +1067,12 @@ function extractXmlBlock(xml: string, tagName: string): string | undefined {
     new RegExp(`<${tagName}\\b[^>]*>[\\s\\S]*?</${tagName}>`, 'i'),
   );
   return match?.[0];
+}
+
+function printableUnknown(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value)
+    : '';
 }
 
 function secretLeakPattern(): RegExp {

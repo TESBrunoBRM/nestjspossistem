@@ -575,6 +575,62 @@ export class FiscalCustodyService implements OnModuleInit {
     }
   }
 
+  async releaseLatestFolio(
+    context: IssuerContext,
+    tipoDTE: TipoDTE,
+    folio: number,
+  ): Promise<void> {
+    const records = await this.listCafRecords(context, tipoDTE);
+    const record = records.find(
+      (item) => folio >= item.rangeStart && folio <= item.rangeEnd,
+    );
+    if (!record) {
+      throw new BadRequestException(
+        `El folio ${folio} no esta autorizado para el RUT ${context.rutEmisor} y DTE ${tipoDTE}`,
+      );
+    }
+
+    if (!this.backendEnabled()) {
+      return this.enqueueMemory(() => {
+        const latest = this.memoryCafs.get(cafStorageKey(record));
+        if (!latest || latest.nextFolio !== folio + 1) {
+          throw new BadRequestException(
+            `Solo se puede liberar el ultimo folio reservado antes del upload para DTE ${tipoDTE}`,
+          );
+        }
+        latest.nextFolio = folio;
+        latest.updatedAt = new Date().toISOString();
+        this.memoryCafs.set(cafStorageKey(latest), latest);
+      });
+    }
+
+    try {
+      await this.dynamo!.send(
+        new UpdateCommand({
+          TableName: this.tableName!,
+          Key: this.cafKey(record),
+          UpdateExpression: 'SET nextFolio = :folio, updatedAt = :updatedAt',
+          ConditionExpression:
+            'nextFolio = :expectedNextFolio AND :folio >= :rangeStart AND :folio <= :rangeEnd',
+          ExpressionAttributeValues: {
+            ':folio': folio,
+            ':expectedNextFolio': folio + 1,
+            ':rangeStart': record.rangeStart,
+            ':rangeEnd': record.rangeEnd,
+            ':updatedAt': new Date().toISOString(),
+          },
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ConditionalCheckFailedException) {
+        throw new BadRequestException(
+          `Solo se puede liberar el ultimo folio reservado antes del upload para DTE ${tipoDTE}`,
+        );
+      }
+      throw error;
+    }
+  }
+
   private backendEnabled(): boolean {
     return Boolean(this.tableName && this.bucketName);
   }

@@ -35,6 +35,7 @@ x-certification-environment: &certification-environment
   SII_PORTAL_CERT_LOGIN_ENABLED: 'true'
   SII_PORTAL_HEADLESS: 'true'
   SII_PORTAL_PROGRESS_LOG_ENABLED: 'true'
+  SII_XSD_VALIDATION_ENABLED: 'true'
 
 x-existing-caf-environment: &existing-caf-environment
   <<: *certification-environment
@@ -124,6 +125,18 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+  emit-dte:
+    <<: *acceptance-service
+    environment: *existing-caf-environment
+    command:
+      - node
+      - --experimental-vm-modules
+      - node_modules/jest/bin/jest.js
+      - --config
+      - ./test/jest-smoke.json
+      - --runInBand
+      - ./test/fiscal-real-sii-dte.smoke-spec.ts
 
   emit-factura33:
     <<: *acceptance-service

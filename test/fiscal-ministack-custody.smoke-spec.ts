@@ -4,6 +4,8 @@ import { INestApplication } from '@nestjs/common';
 import { SiiEnvironment, TipoDTE } from 'sii-engine';
 import { FiscalContextResolver } from '../src/fiscal/fiscal-context.resolver';
 import { FiscalSigningProvider } from '../src/fiscal/fiscal-signing.provider';
+import { FiscalDocumentRepository } from '../src/fiscal-documents/fiscal-document.repository';
+import { FiscalFolioProvider } from '../src/fiscal-documents/fiscal-folio.provider';
 import { createFiscalTestApp } from './support/nest-test-app';
 import { prepareMinistackTestEnv } from './support/env-loader';
 import {
@@ -151,18 +153,83 @@ describe('Fiscal custody on Ministack (smoke)', () => {
 
     const contextResolver = app.get(FiscalContextResolver);
     const signingProvider = app.get(FiscalSigningProvider);
+    const folioProvider = app.get(FiscalFolioProvider);
     const context = await contextResolver.resolve({
       tenantId,
       rutEmisor,
       environment: SiiEnvironment.Certificacion,
     });
+
+    await folioProvider.releaseLatestFolio(
+      context,
+      TipoDTE.BoletaElectronica,
+      900,
+    );
+    await expect(
+      folioProvider.getNextFolio(context, TipoDTE.BoletaElectronica),
+    ).resolves.toEqual(expect.objectContaining({ folio: 900 }));
+
     const material = await signingProvider.getSigningMaterial(context);
 
     expect(material.rutFirmante).toBe(rutFirmante);
     expect(material.certificatePem).toContain('BEGIN CERTIFICATE');
     expect(material.privateKeyPem).toContain('BEGIN RSA PRIVATE KEY');
   });
+  it('persists document metadata and signed XML across app restarts', async () => {
+    const internalId = `ministack-document-${Date.now()}-${process.pid}`;
+    const trackId = `ministack-track-${Date.now()}-${process.pid}`;
+    const repository = app.get(FiscalDocumentRepository);
+    expect(repository.mode()).toBe('aws');
+
+    await repository.createDurable({
+      internalId,
+      tenantId,
+      environment: SiiEnvironment.Certificacion,
+      rutEmisor,
+      tipoDTE: TipoDTE.FacturaElectronica,
+      folio: 901,
+      trackId,
+      status: 'EPR',
+      dteStatus: 'DOK',
+      attempts: 1,
+      document: Object.assign(new SyntheticDteDocument(), {
+        idDoc: {
+          tipoDTE: TipoDTE.FacturaElectronica,
+          folio: 901,
+          fechaEmision: '2026-07-16',
+        },
+        emisor: {} as never,
+        receptor: {} as never,
+        detalles: [],
+        totales: { mntTotal: 0 },
+      }),
+      tedXml: '<TED version="1.0"><DD /></TED>',
+      signedDteXml: '<DTE ID="DTE-901" />',
+      signedEnvelopeXml: '<EnvioDTE ID="SetDoc" />',
+    });
+
+    await app.close();
+    app = await createFiscalTestApp();
+
+    const reloadedRepository = app.get(FiscalDocumentRepository);
+    const byId = await reloadedRepository.findByIdDurable(internalId);
+    const byTrack = await reloadedRepository.findByTrackIdDurable(trackId);
+
+    expect(byId).toMatchObject({
+      internalId,
+      tenantId,
+      rutEmisor,
+      folio: 901,
+      dteStatus: 'DOK',
+    });
+    expect(byId?.tedXml).toContain('<TED');
+    expect(byId?.signedDteXml).toContain('<DTE');
+    expect(byId?.signedEnvelopeXml).toContain('<EnvioDTE');
+    expect(byTrack?.internalId).toBe(internalId);
+  });
 });
+
+class SyntheticDteDocument {}
 
 type SuperTestTarget = Parameters<typeof request>[0];
 

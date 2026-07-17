@@ -12,6 +12,9 @@ import {
 } from 'sii-engine';
 import { FiscalDocumentService } from './fiscal-document.service';
 import { FiscalDocumentRepository } from './fiscal-document.repository';
+import { SourceNoteOperation } from './dto/create-source-note.dto';
+import { SiiXsdValidationService } from './sii-xsd-validation.service';
+import { FiscalPdfService } from './fiscal-pdf.service';
 import { FiscalFolioProvider } from './fiscal-folio.provider';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
 import { FiscalContextResolver } from '../fiscal/fiscal-context.resolver';
@@ -110,6 +113,7 @@ describe('Fiscal Services with Mock Transport', () => {
   let rvdService: FiscalRvdService;
   let repository: FiscalDocumentRepository;
   let folioProvider: FiscalFolioProvider;
+  let xsdValidation: SiiXsdValidationService;
 
   beforeEach(async () => {
     mockBoletaSend.mockReset().mockResolvedValue({
@@ -152,6 +156,8 @@ describe('Fiscal Services with Mock Transport', () => {
         FiscalPollingService,
         FiscalRvdService,
         FiscalDocumentRepository,
+        SiiXsdValidationService,
+        FiscalPdfService,
         FiscalFolioProvider,
         {
           provide: FiscalCustodyService,
@@ -214,6 +220,7 @@ describe('Fiscal Services with Mock Transport', () => {
     rvdService = module.get(FiscalRvdService);
     repository = module.get(FiscalDocumentRepository);
     folioProvider = module.get(FiscalFolioProvider);
+    xsdValidation = module.get(SiiXsdValidationService);
 
     repository.clear();
   });
@@ -291,13 +298,13 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(record?.trackId).toBe('mock-track-123');
 
       // Retrieve printed sample
-      const sample = docService.getPrintedSample(result.internalId);
+      const sample = await docService.getPrintedSample(result.internalId);
       expect(sample.rutEmisor).toBe('11111111-1');
       expect(sample.folio).toBe(10);
       expect(sample.pdf417Payload).toContain('<TED');
 
       // Request printed sample of invalid document throws NotFound
-      expect(() => docService.getPrintedSample('invalid-id')).toThrow(
+      await expect(docService.getPrintedSample('invalid-id')).rejects.toThrow(
         NotFoundException,
       );
     });
@@ -468,6 +475,7 @@ describe('Fiscal Services with Mock Transport', () => {
         context,
         cafXml('11111111-1', 100, 110, TipoDTE.FacturaElectronica),
       );
+      const createSpy = jest.spyOn(repository, 'createDurable');
 
       const result = await docService.emitirDte(
         {
@@ -525,6 +533,10 @@ describe('Fiscal Services with Mock Transport', () => {
         'mocktoken123',
         mockCert.rutFirmante,
       );
+      expect(createSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        mockDteSend.mock.invocationCallOrder[0],
+      );
+      createSpy.mockRestore();
       const dteSendCalls = mockDteSend.mock.calls as Array<
         [string, ...unknown[]]
       >;
@@ -541,6 +553,122 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(signedEnvelope).toContain('<FRMT algoritmo="SHA1withRSA">');
       expect(signedEnvelope).toContain('<FRMA algoritmo="SHA1withRSA">');
       expect(JSON.stringify(result)).not.toContain('rawResponse');
+    });
+
+    it('returns the SII result when metadata update fails after upload', async () => {
+      await folioProvider.addCafXml(
+        context,
+        cafXml(
+          '11111111-1',
+          450,
+          460,
+          TipoDTE.FacturaNoAfectaExentaElectronica,
+        ),
+      );
+      const updateSpy = jest
+        .spyOn(repository, 'updateDurable')
+        .mockRejectedValueOnce(new Error('DynamoDB unavailable after upload'));
+
+      const result = await docService.emitirDte(
+        {
+          context: {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          document: {
+            idDoc: {
+              tipoDTE: TipoDTE.FacturaNoAfectaExentaElectronica,
+              fechaEmision: '2026-05-25',
+              formaPago: 1,
+            },
+            emisor: { rutEmisor: '11111111-1' },
+            receptor: {
+              rutRecep: '22222222-2',
+              rznSocRecep: 'RECEPTOR TEST',
+            },
+            detalles: [
+              {
+                nroLinDet: 1,
+                nmbItem: 'Servicio exento',
+                qtyItem: 1,
+                prcItem: 1000,
+                montoItem: 1000,
+              },
+            ],
+            totales: {
+              mntExento: 1000,
+              mntTotal: 1000,
+            },
+          },
+        },
+        TipoDTE.FacturaNoAfectaExentaElectronica,
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          folio: 450,
+          trackId: 'mock-dte-track-333',
+          status: 'EPR',
+        }),
+      );
+      expect(repository.findById(result.internalId)?.status).toBe('PREPARED');
+      updateSpy.mockRestore();
+    });
+
+    it('releases a reserved folio when XSD validation fails before upload', async () => {
+      await folioProvider.addCafXml(
+        context,
+        cafXml('11111111-1', 500, 510, TipoDTE.FacturaElectronica),
+      );
+      jest
+        .spyOn(xsdValidation, 'validateSignedEnvelope')
+        .mockImplementationOnce(() => {
+          throw new Error('XSD preflight failed');
+        });
+
+      await expect(
+        docService.emitirDte(
+          {
+            context: {
+              fechaResolucion: '2020-01-01',
+              nroResolucion: 80,
+            },
+            document: {
+              idDoc: {
+                tipoDTE: TipoDTE.FacturaElectronica,
+                fechaEmision: '2026-05-25',
+                formaPago: 1,
+              },
+              emisor: { rutEmisor: '11111111-1' },
+              receptor: {
+                rutRecep: '22222222-2',
+                rznSocRecep: 'RECEPTOR TEST',
+              },
+              detalles: [
+                {
+                  nroLinDet: 1,
+                  nmbItem: 'Servicio test',
+                  qtyItem: 1,
+                  prcItem: 1000,
+                  montoItem: 1000,
+                },
+              ],
+              totales: {
+                mntNeto: 840,
+                tasaIVA: 19,
+                iva: 160,
+                mntTotal: 1000,
+              },
+            },
+          },
+          TipoDTE.FacturaElectronica,
+        ),
+      ).rejects.toThrow('XSD preflight failed');
+
+      expect(mockDteSend).not.toHaveBeenCalled();
+      await expect(
+        folioProvider.getNextFolio(context, TipoDTE.FacturaElectronica),
+      ).resolves.toEqual(expect.objectContaining({ folio: 500 }));
     });
 
     it('reports factura 33 readiness without leaking fiscal secrets', async () => {
@@ -767,6 +895,121 @@ describe('Fiscal Services with Mock Transport', () => {
       expect(mockDteSend).not.toHaveBeenCalled();
     });
 
+    it('derives a credit note reference from an accepted source document', async () => {
+      await folioProvider.addCafXml(
+        context,
+        cafXml('11111111-1', 300, 310, TipoDTE.NotaCredito),
+      );
+
+      const sourceInternalId = 'accepted-source-33';
+      repository.create({
+        internalId: sourceInternalId,
+        environment: SiiEnvironment.Certificacion,
+        rutEmisor: '11111111-1',
+        tipoDTE: TipoDTE.FacturaElectronica,
+        folio: 100,
+        status: 'EPR',
+        dteStatus: 'DOK',
+        attempts: 0,
+        document: {
+          idDoc: {
+            tipoDTE: TipoDTE.FacturaElectronica,
+            folio: 100,
+            fechaEmision: '2026-05-25',
+          },
+          emisor: {
+            rutEmisor: '11111111-1',
+            rznSoc: 'EMISOR TEST',
+            giroEmis: 'SERVICIOS',
+            acteco: 620200,
+            dirOrigen: 'ORIGEN 123',
+            cmnaOrigen: 'SANTIAGO',
+          },
+          receptor: {
+            rutRecep: '60803000-K',
+            rznSocRecep: 'SERVICIO DE IMPUESTOS INTERNOS',
+            giroRecep: 'GOBIERNO',
+            dirRecep: 'TEATINOS 120',
+            cmnaRecep: 'SANTIAGO',
+          },
+          detalles: [
+            {
+              nroLinDet: 1,
+              nmbItem: 'Servicio origen',
+              qtyItem: 1,
+              prcItem: 1000,
+              montoItem: 1000,
+            },
+          ],
+          totales: {
+            mntNeto: 1000,
+            tasaIVA: 19,
+            iva: 190,
+            mntTotal: 1190,
+          },
+        },
+        tedXml: '<TED />',
+      });
+
+      const result = await docService.emitirNotaCreditoDesdeOrigen(
+        sourceInternalId,
+        {
+          context: {
+            fechaResolucion: '2020-01-01',
+            nroResolucion: 80,
+          },
+          operation: SourceNoteOperation.Annulment,
+          reason: 'Anulacion total de factura origen',
+        },
+      );
+
+      const note = repository.findById(result.internalId);
+      expect(note?.sourceInternalId).toBe(sourceInternalId);
+      expect(note?.noteOperation).toBe(SourceNoteOperation.Annulment);
+      expect(note?.document.referencias?.[0]).toMatchObject({
+        tipoDTERef: String(TipoDTE.FacturaElectronica),
+        folioRef: 100,
+        fechaRef: '2026-05-25',
+        codRef: 1,
+      });
+      expect(mockDteSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an incompatible note operation before reserving a folio', async () => {
+      repository.create({
+        internalId: 'accepted-source-invalid-operation',
+        environment: SiiEnvironment.Certificacion,
+        rutEmisor: '11111111-1',
+        tipoDTE: TipoDTE.FacturaElectronica,
+        folio: 101,
+        status: 'EPR',
+        dteStatus: 'DOK',
+        attempts: 0,
+        document: {
+          idDoc: {
+            tipoDTE: TipoDTE.FacturaElectronica,
+            folio: 101,
+            fechaEmision: '2026-05-25',
+          },
+          emisor: {} as never,
+          receptor: {} as never,
+          detalles: [],
+          totales: { mntTotal: 0 },
+        },
+        tedXml: '<TED />',
+      });
+
+      await expect(
+        docService.emitirNotaDebitoDesdeOrigen(
+          'accepted-source-invalid-operation',
+          {
+            operation: SourceNoteOperation.Annulment,
+            reason: 'Operacion no permitida',
+          },
+        ),
+      ).rejects.toThrow('solo admite amount_increase');
+      expect(mockDteSend).not.toHaveBeenCalled();
+    });
     it('can create edge provision from valid parameters', async () => {
       const edgeDto = {
         context: {

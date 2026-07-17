@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { resolveCommand } = require('../../scripts/cli/sii-cert.cjs') as {
   resolveCommand: (args: string[]) => {
     help: boolean;
@@ -16,8 +17,12 @@ describe('sii:cert CLI', () => {
   it.each([
     ['33', '33'],
     ['factura', '33'],
+    ['factura-exenta', '34'],
     ['39', '39'],
     ['boleta', '39'],
+    ['boleta-exenta', '41'],
+    ['nota-debito', '56'],
+    ['nota-credito', '61'],
   ])('normalizes CAF type %s to %s', (input, expected) => {
     const result = resolveCommand(['caf', 'acquire', `--type=${input}`]);
     expect(result.dockerArgs).toContain(`REAL_SII_TEST_CAF_TYPE=${expected}`);
@@ -31,6 +36,12 @@ describe('sii:cert CLI', () => {
     expect(resolveCommand(['emit', '--type=39']).dockerArgs).toContain(
       'emit-boleta39',
     );
+
+    for (const type of ['34', '41', '56', '61']) {
+      const result = resolveCommand(['emit', `--type=${type}`]);
+      expect(result.dockerArgs).toContain('emit-dte');
+      expect(result.dockerArgs).toContain(`REAL_SII_TEST_CAF_TYPE=${type}`);
+    }
   });
 
   it('checks custody without routing through CAF acquisition', () => {
@@ -55,10 +66,10 @@ describe('sii:cert CLI', () => {
 
   it('fails closed for missing or unsupported types', () => {
     expect(() => resolveCommand(['emit'])).toThrow('Falta --type');
-    expect(() => resolveCommand(['emit', '--type=34'])).toThrow(
+    expect(() => resolveCommand(['emit', '--type=46'])).toThrow(
       'Tipo DTE no soportado',
     );
-    expect(() => resolveCommand(['emit', '--type=factura33'])).toThrow(
+    expect(() => resolveCommand(['emit', '--type=factura35'])).toThrow(
       'Tipo DTE no soportado',
     );
     expect(() =>
@@ -126,6 +137,12 @@ describe('sii:cert CLI', () => {
     ]);
     expect(send.dockerArgs).toContain(service);
     expect(send.dockerArgs).not.toContain('--no-deps');
+  });
+
+  it('keeps retry restricted to the validated 33/39 strategies', () => {
+    expect(() =>
+      resolveCommand(['retry', 'validate', '--type=34', '--folio=1']),
+    ).toThrow('solo para DTE 33 y 39');
   });
 
   it('limits controlled preparation to boleta 39', () => {

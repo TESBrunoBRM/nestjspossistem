@@ -38,6 +38,7 @@ import {
   type DteDocument,
   type EnvioDTECaratula,
   type FolioProvider,
+  type IssuerContext,
   type SendResult,
   type SendStatus,
   type SigningProvider,
@@ -50,8 +51,26 @@ import { sanitizePublicPayload } from '../common/security/sensitive-redaction.ut
 import { EmitBoletaDto } from './dto/emit-boleta.dto';
 import { EmitDteDto } from './dto/emit-dte.dto';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
-import { FiscalDocumentRepository } from './fiscal-document.repository';
+import {
+  FiscalDocumentRepository,
+  type FiscalDocumentRecord,
+} from './fiscal-document.repository';
 import { CreateEdgeProvisionDto } from './dto/create-edge-provision.dto';
+import {
+  CreateSourceNoteDto,
+  SourceNoteOperation,
+} from './dto/create-source-note.dto';
+import { SiiXsdValidationService } from './sii-xsd-validation.service';
+import { FiscalPdfService } from './fiscal-pdf.service';
+import { PrintedDocumentQueryDto } from './dto/printed-document-query.dto';
+
+interface ReleasableFolioProvider extends FolioProvider {
+  releaseLatestFolio(
+    context: IssuerContext,
+    tipoDTE: TipoDTE,
+    folio: number,
+  ): Promise<void>;
+}
 
 @Injectable()
 export class FiscalDocumentService {
@@ -70,8 +89,10 @@ export class FiscalDocumentService {
     private readonly signingProvider: SigningProvider,
     private readonly tokenProvider: FiscalTokenProvider,
     @Inject(FISCAL_FOLIO_PROVIDER)
-    private readonly folios: FolioProvider,
+    private readonly folios: ReleasableFolioProvider,
     private readonly repository: FiscalDocumentRepository,
+    private readonly xsdValidation: SiiXsdValidationService,
+    private readonly pdfService: FiscalPdfService,
   ) {}
 
   async emitirBoleta(dto: EmitBoletaDto) {
@@ -101,6 +122,8 @@ export class FiscalDocumentService {
     }
 
     this.inFlight.add(idempotencyKey);
+    let reservedFolio: number | undefined;
+    let uploadStarted = false;
 
     try {
       const assignment =
@@ -111,6 +134,7 @@ export class FiscalDocumentService {
               input.idDoc.folio,
             )
           : await this.folios.getNextFolio(context, input.idDoc.tipoDTE);
+      reservedFolio = assignment.folio;
 
       const document: DteDocument = {
         ...input,
@@ -181,6 +205,10 @@ export class FiscalDocumentService {
         assignment.caf,
         'sobre firmado EnvioBOLETA',
       );
+      this.xsdValidation.validateSignedEnvelope(
+        signedEnvelope,
+        document.idDoc.tipoDTE,
+      );
       const token =
         resolveBoletaAuthScope(context.environment) === 'boleta_rest'
           ? await this.tokenProvider.getBoletaToken(
@@ -188,37 +216,46 @@ export class FiscalDocumentService {
               this.signingProvider,
             )
           : await this.tokenProvider.getToken(context, this.signingProvider);
+
+      const internalId = randomUUID();
+      await this.repository.createDurable({
+        internalId,
+        tenantId: context.tenantId,
+        environment: context.environment,
+        rutEmisor: context.rutEmisor,
+        tipoDTE: document.idDoc.tipoDTE,
+        folio: assignment.folio,
+        status: 'PREPARED',
+        attempts: 0,
+        document,
+        tedXml,
+        signedDteXml: signedDte,
+        signedEnvelopeXml: signedEnvelope,
+      });
+
+      uploadStarted = true;
       const result = await this.sendBoletaToSii(
         signedEnvelope,
         context,
         token.token,
         cert.rutFirmante,
       );
-
-      const internalId = randomUUID();
-
-      // Save document to in-memory repository
-      this.repository.create({
-        internalId,
-        tenantId: context.tenantId,
-        rutEmisor: context.rutEmisor,
-        tipoDTE: document.idDoc.tipoDTE,
-        folio: assignment.folio,
-        trackId: result.trackId,
-        status: result.status,
-        attempts: 0,
-        document,
-        tedXml,
-        signedDteXml: signedDte,
-        signedEnvelopeXml: signedEnvelope,
-        nextPollAt: new Date(Date.now() + 60000), // Next recommended poll after 60s
-      });
+      await this.persistSendResult(internalId, result);
 
       return {
         internalId,
         folio: assignment.folio,
         ...toPublicSendResult(result),
       };
+    } catch (error) {
+      if (reservedFolio !== undefined && !uploadStarted) {
+        await this.releasePreUploadFolio(
+          context,
+          input.idDoc.tipoDTE,
+          reservedFolio,
+        );
+      }
+      throw error;
     } finally {
       this.inFlight.delete(idempotencyKey);
     }
@@ -241,6 +278,8 @@ export class FiscalDocumentService {
     }
 
     this.inFlight.add(idempotencyKey);
+    let reservedFolio: number | undefined;
+    let uploadStarted = false;
 
     try {
       const assignment =
@@ -251,6 +290,7 @@ export class FiscalDocumentService {
               input.idDoc.folio,
             )
           : await this.folios.getNextFolio(context, input.idDoc.tipoDTE);
+      reservedFolio = assignment.folio;
 
       const document: DteDocument = {
         ...input,
@@ -318,45 +358,269 @@ export class FiscalDocumentService {
         assignment.caf,
         'sobre firmado EnvioDTE',
       );
+      this.xsdValidation.validateSignedEnvelope(
+        signedEnvelope,
+        document.idDoc.tipoDTE,
+      );
 
       const token = await this.tokenProvider.getToken(
         context,
         this.signingProvider,
       );
+
+      const internalId = randomUUID();
+      await this.repository.createDurable({
+        internalId,
+        tenantId: context.tenantId,
+        environment: context.environment,
+        rutEmisor: context.rutEmisor,
+        tipoDTE: document.idDoc.tipoDTE,
+        folio: assignment.folio,
+        status: 'PREPARED',
+        attempts: 0,
+        document,
+        tedXml,
+        signedDteXml: signedDte,
+        signedEnvelopeXml: signedEnvelope,
+      });
+
+      uploadStarted = true;
       const result = await this.dteClient.send(
         signedEnvelope,
         context,
         token.token,
         cert.rutFirmante,
       );
-
-      const internalId = randomUUID();
-      this.repository.create({
-        internalId,
-        tenantId: context.tenantId,
-        rutEmisor: context.rutEmisor,
-        tipoDTE: document.idDoc.tipoDTE,
-        folio: assignment.folio,
-        trackId: result.trackId,
-        status: result.status,
-        attempts: 0,
-        document,
-        tedXml,
-        signedDteXml: signedDte,
-        signedEnvelopeXml: signedEnvelope,
-        nextPollAt: new Date(Date.now() + 60000),
-      });
+      await this.persistSendResult(internalId, result);
 
       return {
         internalId,
         folio: assignment.folio,
         ...toPublicSendResult(result),
       };
+    } catch (error) {
+      if (reservedFolio !== undefined && !uploadStarted) {
+        await this.releasePreUploadFolio(
+          context,
+          input.idDoc.tipoDTE,
+          reservedFolio,
+        );
+      }
+      throw error;
     } finally {
       this.inFlight.delete(idempotencyKey);
     }
   }
 
+  private async persistSendResult(
+    internalId: string,
+    result: SendResult,
+  ): Promise<void> {
+    try {
+      await this.repository.updateDurable(internalId, {
+        trackId: result.trackId,
+        status: result.status,
+        nextPollAt: new Date(Date.now() + 60000),
+      });
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'error desconocido';
+      this.logger.error(
+        'El DTE ' +
+          internalId +
+          ' fue enviado al SII, pero no se pudo actualizar su metadata durable: ' +
+          detail,
+      );
+    }
+  }
+
+  private async releasePreUploadFolio(
+    context: IssuerContext,
+    tipoDTE: TipoDTE,
+    folio: number,
+  ): Promise<void> {
+    try {
+      await this.folios.releaseLatestFolio(context, tipoDTE, folio);
+      this.logger.warn(
+        `Folio ${folio} DTE ${tipoDTE} liberado tras fallo previo al upload`,
+      );
+    } catch (releaseError) {
+      const detail =
+        releaseError instanceof Error
+          ? releaseError.message
+          : 'error desconocido';
+      this.logger.error(
+        `No se pudo liberar el folio ${folio} DTE ${tipoDTE} tras fallo previo al upload: ${detail}`,
+      );
+    }
+  }
+
+  async emitirNotaCreditoDesdeOrigen(
+    sourceInternalId: string,
+    dto: CreateSourceNoteDto,
+  ) {
+    return this.emitirNotaDesdeOrigen(
+      sourceInternalId,
+      dto,
+      TipoDTE.NotaCredito,
+    );
+  }
+
+  async emitirNotaDebitoDesdeOrigen(
+    sourceInternalId: string,
+    dto: CreateSourceNoteDto,
+  ) {
+    return this.emitirNotaDesdeOrigen(
+      sourceInternalId,
+      dto,
+      TipoDTE.NotaDebito,
+    );
+  }
+
+  private async emitirNotaDesdeOrigen(
+    sourceInternalId: string,
+    dto: CreateSourceNoteDto,
+    targetTipoDTE: TipoDTE.NotaCredito | TipoDTE.NotaDebito,
+  ) {
+    const context = await this.contextResolver.resolve(dto.context);
+    const source = await this.repository.findByIdDurable(sourceInternalId);
+    if (!source) {
+      throw new NotFoundException('Documento origen no encontrado.');
+    }
+
+    this.assertRecordOwnership(source, context);
+    if (
+      source.tipoDTE !== Number(TipoDTE.FacturaElectronica) &&
+      source.tipoDTE !== Number(TipoDTE.FacturaNoAfectaExentaElectronica)
+    ) {
+      throw new BadRequestException(
+        'Las notas controladas solo admiten factura 33 o factura exenta 34 como origen.',
+      );
+    }
+
+    this.assertNoteOperation(targetTipoDTE, dto.operation);
+    if (source.dteStatus !== 'DOK') {
+      await this.getDteStatus(sourceInternalId, dto.context ?? {});
+    }
+    if (source.dteStatus !== 'DOK') {
+      throw new BadRequestException(
+        'El documento origen debe estar aceptado por SII con estado DOK antes de emitir una nota.',
+      );
+    }
+
+    const codRef =
+      dto.operation === SourceNoteOperation.Annulment
+        ? 1
+        : dto.operation === SourceNoteOperation.TextCorrection
+          ? 2
+          : 3;
+    const adjustment = this.buildNoteAdjustment(source.document, dto);
+
+    const document: DteDocument = {
+      idDoc: {
+        tipoDTE: targetTipoDTE,
+        folio: 0,
+        fechaEmision: new Date().toISOString().slice(0, 10),
+      },
+      emisor: { ...source.document.emisor },
+      receptor: { ...source.document.receptor },
+      detalles: adjustment.detalles,
+      totales: adjustment.totales,
+      referencias: [
+        {
+          nroLinRef: 1,
+          tipoDTERef: String(source.tipoDTE),
+          folioRef: source.folio,
+          fechaRef: source.document.idDoc.fechaEmision,
+          codRef,
+          razonRef: dto.reason.trim(),
+        },
+      ],
+    };
+
+    const result = await this.emitirDte(
+      {
+        context: dto.context,
+        document,
+      } as unknown as EmitDteDto,
+      targetTipoDTE,
+    );
+    await this.repository.updateDurable(result.internalId, {
+      sourceInternalId,
+      noteOperation: dto.operation,
+    });
+
+    return {
+      ...result,
+      sourceInternalId,
+      operation: dto.operation,
+    };
+  }
+
+  private buildNoteAdjustment(
+    source: DteDocument,
+    dto: CreateSourceNoteDto,
+  ): Pick<DteDocument, 'detalles' | 'totales'> {
+    if (dto.operation === SourceNoteOperation.Annulment) {
+      return {
+        detalles: source.detalles.map((detail) => ({ ...detail })),
+        totales: { ...source.totales },
+      };
+    }
+
+    if (dto.operation === SourceNoteOperation.TextCorrection) {
+      return {
+        detalles: [
+          {
+            nroLinDet: 1,
+            nmbItem: dto.reason.trim(),
+            prcItem: 0,
+            montoItem: 0,
+          },
+        ],
+        totales: { mntTotal: 0 },
+      };
+    }
+
+    if (!dto.details?.length || !dto.totals) {
+      throw new BadRequestException(
+        'Las correcciones de monto requieren details y totals.',
+      );
+    }
+
+    return {
+      detalles: dto.details.map((detail) => ({ ...detail })),
+      totales: { ...dto.totals },
+    } as Pick<DteDocument, 'detalles' | 'totales'>;
+  }
+
+  private assertNoteOperation(
+    targetTipoDTE: TipoDTE.NotaCredito | TipoDTE.NotaDebito,
+    operation: SourceNoteOperation,
+  ): void {
+    const creditOperations = [
+      SourceNoteOperation.Annulment,
+      SourceNoteOperation.TextCorrection,
+      SourceNoteOperation.AmountDecrease,
+    ];
+
+    if (
+      targetTipoDTE === TipoDTE.NotaCredito &&
+      !creditOperations.includes(operation)
+    ) {
+      throw new BadRequestException(
+        'La nota de credito admite annulment, text_correction o amount_decrease.',
+      );
+    }
+    if (
+      targetTipoDTE === TipoDTE.NotaDebito &&
+      operation !== SourceNoteOperation.AmountIncrease
+    ) {
+      throw new BadRequestException(
+        'La nota de debito solo admite amount_increase.',
+      );
+    }
+  }
   async getFactura33Readiness(dto: IssuerContextDto) {
     return this.getLegacyDteReadiness(dto, TipoDTE.FacturaElectronica);
   }
@@ -448,10 +712,11 @@ export class FiscalDocumentService {
   ) {
     const context = await this.contextResolver.resolve(dto);
 
-    let record = this.repository.findById(idOrTrackId);
+    let record = await this.repository.findByIdDurable(idOrTrackId);
     if (!record) {
-      record = this.repository.findByTrackId(idOrTrackId);
+      record = await this.repository.findByTrackIdDurable(idOrTrackId);
     }
+    if (record) this.assertRecordOwnership(record, context);
 
     const trackIdToQuery = record?.trackId || idOrTrackId;
     const attempt = record ? record.attempts : 0;
@@ -470,7 +735,7 @@ export class FiscalDocumentService {
     );
 
     if (record) {
-      this.repository.update(record.internalId, {
+      await this.repository.updateDurable(record.internalId, {
         status: pollResult.normalizedStatus,
         attempts: record.attempts + 1,
         nextPollAt: new Date(Date.now() + pollResult.nextPollAfter),
@@ -486,10 +751,11 @@ export class FiscalDocumentService {
 
   async getDteStatus(internalId: string, dto: IssuerContextDto) {
     const context = await this.contextResolver.resolve(dto);
-    const record = this.repository.findById(internalId);
+    const record = await this.repository.findByIdDurable(internalId);
     if (!record) {
       throw new NotFoundException('Documento no encontrado.');
     }
+    this.assertRecordOwnership(record, context);
     if (isBoletaTipoDTE(record.tipoDTE)) {
       throw new BadRequestException(
         'La consulta de estado DTE no aplica a boletas; use estado de envio por trackId.',
@@ -519,11 +785,14 @@ export class FiscalDocumentService {
       token.token,
     );
 
+    await this.repository.updateDurable(internalId, {
+      dteStatus: result.status,
+    });
     return toPublicDteStatusQueryResult(result);
   }
 
-  getPrintedSample(internalId: string) {
-    const record = this.repository.findById(internalId);
+  async getPrintedSample(internalId: string) {
+    const record = await this.repository.findByIdDurable(internalId);
     if (!record) {
       throw new NotFoundException('Documento no encontrado.');
     }
@@ -531,6 +800,15 @@ export class FiscalDocumentService {
     return buildPrintedSampleArtifact(record.document, record.tedXml);
   }
 
+  async getPdf(internalId: string, query: PrintedDocumentQueryDto) {
+    const context = await this.contextResolver.resolve(query);
+    const record = await this.repository.findByIdDurable(internalId);
+    if (!record) {
+      throw new NotFoundException('Documento no encontrado.');
+    }
+    this.assertRecordOwnership(record, context);
+    return this.pdfService.getOrCreate(record, query.format || 'auto');
+  }
   async generateEdgeProvision(dto: CreateEdgeProvisionDto) {
     const context = await this.contextResolver.resolve(dto.context);
     const provision = {
@@ -589,6 +867,23 @@ export class FiscalDocumentService {
     }
   }
 
+  private assertRecordOwnership(
+    record: FiscalDocumentRecord,
+    context: Awaited<ReturnType<FiscalContextResolver['resolve']>>,
+  ): void {
+    if (record.tenantId && record.tenantId !== context.tenantId) {
+      throw new NotFoundException('Documento no encontrado.');
+    }
+    if (record.rutEmisor !== context.rutEmisor) {
+      throw new NotFoundException('Documento no encontrado.');
+    }
+    if (
+      record.environment &&
+      String(record.environment) !== String(context.environment)
+    ) {
+      throw new NotFoundException('Documento no encontrado.');
+    }
+  }
   private assertDteType(document: DteDocument, expectedTipoDTE: number): void {
     const tipoDTE = Number(document.idDoc?.tipoDTE);
     if (tipoDTE !== expectedTipoDTE) {
@@ -1029,7 +1324,7 @@ function normalizeDdXmlForTedVerification(ddXml: string): string {
   return ddXml
     .trim()
     .replace(/^<DD\b[^>]*>/, '<DD>')
-      .replace(/\s+xmlns(?::[A-Za-z0-9_-]+)?="[^"]*"/g, '');
+    .replace(/\s+xmlns(?::[A-Za-z0-9_-]+)?="[^"]*"/g, '');
 }
 
 function encodeSiiXmlBinaryForTed(value: string): string {

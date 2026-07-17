@@ -1,41 +1,74 @@
 import { SiiEnvironment, TipoDTE } from 'sii-engine';
 import { optionalEnv } from './env-loader';
 
+export const SUPPORTED_CERTIFICATION_DTE_TYPES = [
+  TipoDTE.FacturaElectronica,
+  TipoDTE.FacturaNoAfectaExentaElectronica,
+  TipoDTE.BoletaElectronica,
+  TipoDTE.BoletaNoAfectaExentaElectronica,
+  TipoDTE.NotaDebito,
+  TipoDTE.NotaCredito,
+] as const;
+
 export type SupportedCertificationDte =
-  | TipoDTE.FacturaElectronica
-  | TipoDTE.BoletaElectronica;
+  (typeof SUPPORTED_CERTIFICATION_DTE_TYPES)[number];
+
+const DTE_NAMES: Record<SupportedCertificationDte, string> = {
+  [TipoDTE.FacturaElectronica]: 'factura33',
+  [TipoDTE.FacturaNoAfectaExentaElectronica]: 'factura34',
+  [TipoDTE.BoletaElectronica]: 'boleta39',
+  [TipoDTE.BoletaNoAfectaExentaElectronica]: 'boleta41',
+  [TipoDTE.NotaDebito]: 'nota56',
+  [TipoDTE.NotaCredito]: 'nota61',
+};
 
 export function parseCertificationDteType(
   value = optionalEnv('REAL_SII_TEST_CAF_TYPE'),
 ): SupportedCertificationDte {
   const parsed = Number(value);
-  if (
-    parsed !== TipoDTE.FacturaElectronica &&
-    parsed !== TipoDTE.BoletaElectronica
-  ) {
+  if (!isSupportedCertificationDte(parsed)) {
     throw new Error(
-      `REAL_SII_TEST_CAF_TYPE debe ser 33 o 39; valor recibido: ${value || 'vacio'}.`,
+      `REAL_SII_TEST_CAF_TYPE debe ser uno de ${SUPPORTED_CERTIFICATION_DTE_TYPES.join(', ')}; valor recibido: ${value || 'vacio'}.`,
     );
   }
   return parsed;
 }
 
+function isSupportedCertificationDte(
+  value: number,
+): value is SupportedCertificationDte {
+  return SUPPORTED_CERTIFICATION_DTE_TYPES.some(
+    (tipoDTE) => Number(tipoDTE) === value,
+  );
+}
+
 export function resolveCertificationTenantId(
   tipoDTE: SupportedCertificationDte,
 ): string {
+  const dteSpecific = optionalEnv(`REAL_SII_TEST_DTE_${tipoDTE}_TENANT_ID`);
+  if (dteSpecific) return dteSpecific;
+
   if (tipoDTE === TipoDTE.FacturaElectronica) {
     return (
       optionalEnv('REAL_SII_TEST_FACTURA33_TENANT_ID') ||
       'certification-factura33'
     );
   }
-  return optionalEnv('REAL_SII_TEST_TENANT_ID') || 'certification-boleta39';
+
+  if (tipoDTE === TipoDTE.BoletaElectronica) {
+    return optionalEnv('REAL_SII_TEST_TENANT_ID') || 'certification-boleta39';
+  }
+
+  return (
+    optionalEnv('REAL_SII_TEST_LEGACY_TENANT_ID') ||
+    `certification-dte${tipoDTE}`
+  );
 }
 
 export function certificationDteName(
   tipoDTE: SupportedCertificationDte,
-): 'factura' | 'boleta' {
-  return tipoDTE === TipoDTE.FacturaElectronica ? 'factura' : 'boleta';
+): string {
+  return DTE_NAMES[tipoDTE];
 }
 
 export function parseCertificationEnvironment(): SiiEnvironment {
@@ -51,8 +84,8 @@ export function parseCertificationEnvironment(): SiiEnvironment {
 export function parseCafAcquisitionQuantity(
   tipoDTE: SupportedCertificationDte,
 ): number {
-  const defaultQuantity = tipoDTE === TipoDTE.FacturaElectronica ? '50' : '5';
-  const raw = optionalEnv('REAL_SII_TEST_CAF_QUANTITY') || defaultQuantity;
+  void tipoDTE;
+  const raw = optionalEnv('REAL_SII_TEST_CAF_QUANTITY') || '1';
   const quantity = Number(raw);
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
     throw new Error(

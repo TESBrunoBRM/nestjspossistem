@@ -5,6 +5,7 @@ import {
   Param,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
@@ -15,6 +16,9 @@ import { EmitDteDto } from './dto/emit-dte.dto';
 import { CreateEdgeProvisionDto } from './dto/create-edge-provision.dto';
 import { FiscalDocumentService } from './fiscal-document.service';
 import { IssuerContextDto } from '../fiscal/dto/issuer-context.dto';
+import { CreateSourceNoteDto } from './dto/create-source-note.dto';
+import { PrintedDocumentQueryDto } from './dto/printed-document-query.dto';
+import type { Response } from 'express';
 
 @ApiTags('Fiscal Documents')
 @ApiSecurity('x-api-key')
@@ -78,6 +82,37 @@ export class FiscalDocumentsController {
     return this.fiscalDocumentService.emitirDte(dto, 61);
   }
 
+  @Post('documents/:sourceInternalId/credit-notes')
+  @Throttle({ default: { limit: 2, ttl: 1000 } })
+  @ApiOperation({
+    summary:
+      'Emite nota de credito DTE 61 derivando la referencia desde el documento origen',
+  })
+  emitirNotaCreditoDesdeOrigen(
+    @Param('sourceInternalId') sourceInternalId: string,
+    @Body() dto: CreateSourceNoteDto,
+  ) {
+    return this.fiscalDocumentService.emitirNotaCreditoDesdeOrigen(
+      sourceInternalId,
+      dto,
+    );
+  }
+
+  @Post('documents/:sourceInternalId/debit-notes')
+  @Throttle({ default: { limit: 2, ttl: 1000 } })
+  @ApiOperation({
+    summary:
+      'Emite nota de debito DTE 56 derivando la referencia desde el documento origen',
+  })
+  emitirNotaDebitoDesdeOrigen(
+    @Param('sourceInternalId') sourceInternalId: string,
+    @Body() dto: CreateSourceNoteDto,
+  ) {
+    return this.fiscalDocumentService.emitirNotaDebitoDesdeOrigen(
+      sourceInternalId,
+      dto,
+    );
+  }
   @Get('documents/facturas/readiness')
   @Throttle({ default: { limit: 1, ttl: 10000 } })
   @ApiOperation({
@@ -91,8 +126,7 @@ export class FiscalDocumentsController {
   @Get('documents/facturas-exentas/readiness')
   @Throttle({ default: { limit: 1, ttl: 10000 } })
   @ApiOperation({
-    summary:
-      'Verifica si factura exenta DTE 34 esta lista para emision real',
+    summary: 'Verifica si factura exenta DTE 34 esta lista para emision real',
   })
   getFacturaExentaReadiness(@Query() query: IssuerContextDto) {
     return this.fiscalDocumentService.getLegacyDteReadiness(query, 34);
@@ -111,8 +145,7 @@ export class FiscalDocumentsController {
   @Get('documents/guias-despacho/readiness')
   @Throttle({ default: { limit: 1, ttl: 10000 } })
   @ApiOperation({
-    summary:
-      'Verifica si guia de despacho DTE 52 esta lista para emision real',
+    summary: 'Verifica si guia de despacho DTE 52 esta lista para emision real',
   })
   getGuiaDespachoReadiness(@Query() query: IssuerContextDto) {
     return this.fiscalDocumentService.getLegacyDteReadiness(query, 52);
@@ -121,8 +154,7 @@ export class FiscalDocumentsController {
   @Get('documents/notas-de-debito/readiness')
   @Throttle({ default: { limit: 1, ttl: 10000 } })
   @ApiOperation({
-    summary:
-      'Verifica si nota de debito DTE 56 esta lista para emision real',
+    summary: 'Verifica si nota de debito DTE 56 esta lista para emision real',
   })
   getNotaDebitoReadiness(@Query() query: IssuerContextDto) {
     return this.fiscalDocumentService.getLegacyDteReadiness(query, 56);
@@ -131,8 +163,7 @@ export class FiscalDocumentsController {
   @Get('documents/notas-de-credito/readiness')
   @Throttle({ default: { limit: 1, ttl: 10000 } })
   @ApiOperation({
-    summary:
-      'Verifica si nota de credito DTE 61 esta lista para emision real',
+    summary: 'Verifica si nota de credito DTE 61 esta lista para emision real',
   })
   getNotaCreditoReadiness(@Query() query: IssuerContextDto) {
     return this.fiscalDocumentService.getLegacyDteReadiness(query, 61);
@@ -158,6 +189,26 @@ export class FiscalDocumentsController {
     return this.fiscalDocumentService.getDteStatus(id, query);
   }
 
+  @Get('documents/:id/pdf')
+  @Throttle({ default: { limit: 2, ttl: 5000 } })
+  @ApiOperation({
+    summary: 'Genera representación PDF A4 o térmica 80mm con timbre PDF417',
+  })
+  async getPdf(
+    @Param('id') id: string,
+    @Query() query: PrintedDocumentQueryDto,
+    @Res() response: Response,
+  ) {
+    const pdf = await this.fiscalDocumentService.getPdf(id, query);
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader(
+      'Content-Disposition',
+      `inline; filename="dte-${id}-${pdf.format}.pdf"`,
+    );
+    response.setHeader('ETag', `"${pdf.sha256}"`);
+    response.setHeader('X-Fiscal-Pdf-Format', pdf.format);
+    response.send(pdf.buffer);
+  }
   @Get('documents/:id/printed-sample')
   @Throttle({ default: { limit: 2, ttl: 5000 } })
   @ApiOperation({

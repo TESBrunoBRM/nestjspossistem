@@ -8,6 +8,8 @@ import { FiscalFoliosService } from './fiscal-folios.service';
 import { FiscalFolioProvider } from './fiscal-folio.provider';
 import { FiscalDocumentRepository } from './fiscal-document.repository';
 import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
+import { SiiXsdValidationService } from './sii-xsd-validation.service';
+import { FiscalPdfService } from './fiscal-pdf.service';
 
 @Module({
   imports: [FiscalModule, FiscalStorageModule],
@@ -23,6 +25,8 @@ import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
       useExisting: FiscalFolioProvider,
     },
     FiscalDocumentRepository,
+    SiiXsdValidationService,
+    FiscalPdfService,
   ],
   exports: [
     FiscalDocumentService,
@@ -30,6 +34,8 @@ import { FISCAL_FOLIO_PROVIDER } from './fiscal-documents.tokens';
     FISCAL_FOLIO_PROVIDER,
     FiscalFolioProvider,
     FiscalDocumentRepository,
+    SiiXsdValidationService,
+    FiscalPdfService,
   ],
 })
 export class FiscalDocumentsModule {}

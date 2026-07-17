@@ -54,7 +54,7 @@ export class FiscalPollingService {
     this.inFlight.add(lockKey);
 
     try {
-      const documentKind = this.resolveDocumentKind(dto);
+      const documentKind = await this.resolveDocumentKind(dto);
       const isBoleta = documentKind === FiscalPollingDocumentKind.Boleta;
       const token =
         isBoleta &&
@@ -72,9 +72,9 @@ export class FiscalPollingService {
         dto.attempt ?? 0,
       );
 
-      const record = this.repository.findByTrackId(dto.trackId);
+      const record = await this.repository.findByTrackIdDurable(dto.trackId);
       if (record) {
-        this.repository.update(record.internalId, {
+        await this.repository.updateDurable(record.internalId, {
           status: result.normalizedStatus,
           attempts: (dto.attempt ?? record.attempts) + 1,
           nextPollAt: new Date(Date.now() + result.nextPollAfter),
@@ -97,14 +97,14 @@ export class FiscalPollingService {
     }
   }
 
-  private resolveDocumentKind(
+  private async resolveDocumentKind(
     dto: PollSendStatusDto,
-  ): FiscalPollingDocumentKind {
+  ): Promise<FiscalPollingDocumentKind> {
     if (dto.documentKind) return dto.documentKind;
     if (this.rvdRepository.findByTrackId(dto.trackId)) {
       return FiscalPollingDocumentKind.Rvd;
     }
-    if (this.repository.findByTrackId(dto.trackId)) {
+    if (await this.repository.findByTrackIdDurable(dto.trackId)) {
       return FiscalPollingDocumentKind.Boleta;
     }
     return FiscalPollingDocumentKind.Dte;

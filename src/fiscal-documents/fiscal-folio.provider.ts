@@ -104,6 +104,27 @@ export class FiscalFolioProvider implements FolioProvider, OnModuleInit {
     });
   }
 
+  async releaseLatestFolio(
+    context: IssuerContext,
+    tipoDTE: TipoDTE,
+    folio: number,
+  ): Promise<void> {
+    if (this.shouldUseCustodyStorage(context)) {
+      return this.custodyService.releaseLatestFolio(context, tipoDTE, folio);
+    }
+
+    return this.enqueue(() => {
+      const entry = this.findEntryForFolio(context, tipoDTE, folio);
+      if (entry.nextFolio !== folio + 1 || !entry.reservedFolios.has(folio)) {
+        throw new BadRequestException(
+          `Solo se puede liberar el ultimo folio reservado antes del upload para DTE ${tipoDTE}`,
+        );
+      }
+      entry.reservedFolios.delete(folio);
+      entry.nextFolio = folio;
+    });
+  }
+
   async getStatus(
     context: IssuerContext,
     tipoDTE?: TipoDTE,

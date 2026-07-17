@@ -53,6 +53,10 @@ jest.mock('sii-engine', () => {
         status: 'SOK',
         rawResponse: '<xml>mock</xml>',
       }),
+      queryDteStatus: jest.fn().mockResolvedValue({
+        status: 'DOK',
+        rawResponse: '<xml>mock dte status</xml>',
+      }),
     })),
   };
 });
@@ -451,6 +455,46 @@ describe('FiscalController (e2e)', () => {
     expectPublicPayloadSafe(response.body);
   });
 
+  it('POST /api/fiscal/documents/:id/credit-notes derives the accepted source reference', async () => {
+    await request(app.getHttpServer())
+      .post('/api/fiscal/folios/cafs')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        cafXml: cafXml('76123456-0', 900, 905, TipoDTE.FacturaElectronica),
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/api/fiscal/folios/cafs')
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        cafXml: cafXml('76123456-0', 1000, 1005, TipoDTE.NotaCredito),
+      })
+      .expect(201);
+
+    const source = await emitE2eFactura(app);
+    const sourceInternalId = requireInternalId(source.body);
+    const response = await request(app.getHttpServer())
+      .post(`/api/fiscal/documents/${sourceInternalId}/credit-notes`)
+      .set('x-api-key', 'test-api-key')
+      .send({
+        context: folioContext(),
+        operation: 'annulment',
+        reason: 'Anulacion total E2E',
+      })
+      .expect(201);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data).toMatchObject({
+      sourceInternalId,
+      operation: 'annulment',
+      trackId: 'e2e-factura-track-333',
+    });
+    expect(response.body.data.folio).toBeGreaterThan(0);
+    expectPublicPayloadSafe(response.body);
+  });
+
   it('POST /api/fiscal/documents/boletas emits a boleta successfully', async () => {
     const response = await emitE2eBoleta(app);
 
@@ -491,6 +535,22 @@ describe('FiscalController (e2e)', () => {
     expect(response.body.data.rutEmisor).toBe('76123456-0');
     expect(response.body.data.pdf417Payload).toContain('<TED');
     expectPublicPayloadSafe(response.body);
+  });
+
+  it('GET /api/fiscal/documents/:id/pdf returns an 80mm boleta PDF', async () => {
+    const emission = await emitE2eBoleta(app);
+    const internalId = requireInternalId(emission.body);
+    const response = await request(app.getHttpServer())
+      .get(`/api/fiscal/documents/${internalId}/pdf`)
+      .set('x-api-key', 'test-api-key')
+      .query({ format: 'auto' })
+      .expect('Content-Type', /application\/pdf/)
+      .expect(200);
+
+    expect(response.headers['x-fiscal-pdf-format']).toBe('thermal');
+    expect(response.headers.etag).toMatch(/^"[a-f0-9]{64}"$/);
+    expect(Buffer.isBuffer(response.body)).toBe(true);
+    expect((response.body as Buffer).length).toBeGreaterThan(1000);
   });
 
   it('POST /api/fiscal/polling/:trackId/poll-once checks polling status using url parameter', async () => {
@@ -665,6 +725,53 @@ function cafXml(
 
 function toEvenLengthHex(value: string): string {
   return value.length % 2 === 0 ? value : `0${value}`;
+}
+
+async function emitE2eFactura(app: INestApplication) {
+  return request(app.getHttpServer())
+    .post('/api/fiscal/documents/facturas')
+    .set('x-api-key', 'test-api-key')
+    .send({
+      context: folioContext(),
+      document: {
+        idDoc: {
+          tipoDTE: TipoDTE.FacturaElectronica,
+          fechaEmision: new Date().toISOString().slice(0, 10),
+          formaPago: 1,
+        },
+        emisor: {
+          rutEmisor: '76123456-0',
+          rznSoc: 'EMPRESA DE PRUEBA',
+          giroEmis: 'SERVICIOS INFORMATICOS',
+          acteco: 620200,
+          dirOrigen: 'AV. PROVIDENCIA 123',
+          cmnaOrigen: 'PROVIDENCIA',
+        },
+        receptor: {
+          rutRecep: '60803000-K',
+          rznSocRecep: 'SERVICIO DE IMPUESTOS INTERNOS',
+          giroRecep: 'ADMINISTRACION PUBLICA',
+          dirRecep: 'TEATINOS 120',
+          cmnaRecep: 'SANTIAGO',
+        },
+        detalles: [
+          {
+            nroLinDet: 1,
+            nmbItem: 'Servicio E2E nota',
+            qtyItem: 1,
+            prcItem: 1000,
+            montoItem: 1000,
+          },
+        ],
+        totales: {
+          mntNeto: 1000,
+          tasaIVA: 19,
+          iva: 190,
+          mntTotal: 1190,
+        },
+      },
+    })
+    .expect(201);
 }
 
 async function emitE2eBoleta(app: INestApplication) {

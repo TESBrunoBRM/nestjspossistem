@@ -10,6 +10,10 @@ ENV PNPM_HOME=/pnpm \
 
 RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libxml2-utils unzip && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace/business-app-sii
 
 FROM base AS build
@@ -46,6 +50,7 @@ COPY --from=production-deps --chown=pwuser:pwuser /workspace/business-app-sii/no
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/sii-engine/package.json /workspace/sii-engine/package.json
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/sii-engine/dist /workspace/sii-engine/dist
 COPY --from=production-deps --chown=pwuser:pwuser /workspace/sii-engine/node_modules /workspace/sii-engine/node_modules
+COPY business-app-sii/docs_sii ./docs_sii
 COPY business-app-sii/docker/entrypoint.sh /usr/local/bin/business-app-sii-entrypoint
 
 RUN chmod 0555 /usr/local/bin/business-app-sii-entrypoint
@@ -62,13 +67,10 @@ FROM build AS acceptance
 ENV NODE_ENV=test \
     SII_PORTAL_HEADLESS=true
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libxml2-utils unzip && \
-    rm -rf /var/lib/apt/lists/*
-
 RUN mkdir -p /workspace/business-app-sii/secure/real-sii-tests/artifacts && \
     chown -R pwuser:pwuser /workspace/business-app-sii/secure
 
+COPY business-app-sii/docs_sii ./docs_sii
 COPY business-app-sii/docker/entrypoint.sh /usr/local/bin/business-app-sii-entrypoint
 
 RUN chmod 0555 /usr/local/bin/business-app-sii-entrypoint

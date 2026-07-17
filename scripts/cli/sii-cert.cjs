@@ -5,11 +5,29 @@ const { spawn } = require('child_process');
 const COMPOSE_ARGS = ['-f', 'compose.yaml', '-f', 'compose.certification.yaml'];
 
 const DTE_TYPES = new Map([
-  ['33', { code: 33, name: 'factura' }],
-  ['factura', { code: 33, name: 'factura' }],
-  ['39', { code: 39, name: 'boleta' }],
-  ['boleta', { code: 39, name: 'boleta' }],
+  ['33', { code: 33, name: 'factura', service: 'emit-factura33' }],
+  ['factura', { code: 33, name: 'factura', service: 'emit-factura33' }],
+  ['factura33', { code: 33, name: 'factura', service: 'emit-factura33' }],
+  ['34', { code: 34, name: 'factura exenta', service: 'emit-dte' }],
+  ['factura-exenta', { code: 34, name: 'factura exenta', service: 'emit-dte' }],
+  ['factura34', { code: 34, name: 'factura exenta', service: 'emit-dte' }],
+  ['39', { code: 39, name: 'boleta', service: 'emit-boleta39' }],
+  ['boleta', { code: 39, name: 'boleta', service: 'emit-boleta39' }],
+  ['boleta39', { code: 39, name: 'boleta', service: 'emit-boleta39' }],
+  ['41', { code: 41, name: 'boleta exenta', service: 'emit-dte' }],
+  ['boleta-exenta', { code: 41, name: 'boleta exenta', service: 'emit-dte' }],
+  ['boleta41', { code: 41, name: 'boleta exenta', service: 'emit-dte' }],
+  ['56', { code: 56, name: 'nota de debito', service: 'emit-dte' }],
+  ['nota-debito', { code: 56, name: 'nota de debito', service: 'emit-dte' }],
+  ['nota56', { code: 56, name: 'nota de debito', service: 'emit-dte' }],
+  ['61', { code: 61, name: 'nota de credito', service: 'emit-dte' }],
+  ['nota-credito', { code: 61, name: 'nota de credito', service: 'emit-dte' }],
+  ['nota61', { code: 61, name: 'nota de credito', service: 'emit-dte' }],
 ]);
+
+const SUPPORTED_DTE_CODES = [
+  ...new Set([...DTE_TYPES.values()].map((type) => type.code)),
+];
 
 function resolveCommand(argv) {
   if (argv[0] === '--') {
@@ -43,7 +61,9 @@ function resolveCommand(argv) {
 
   if (command === 'caf') {
     if (!['acquire', 'check'].includes(actionOrOption)) {
-      throw new Error('Uso: sii:cert -- caf <acquire|check> --type=<33|39>');
+      throw new Error(
+        `Uso: sii:cert -- caf <acquire|check> --type=<${SUPPORTED_DTE_CODES.join('|')}>`,
+      );
     }
     const options = parseOptions(tail);
     const type = requireDteType(options.type);
@@ -78,9 +98,13 @@ function resolveCommand(argv) {
     const options = parseOptions(argv.slice(1));
     const type = requireDteType(options.type);
     assertAllowedOptions(options, ['type']);
-    const service = type.code === 33 ? 'emit-factura33' : 'emit-boleta39';
+    const dockerArgs = ['run', '--rm'];
+    if (type.service === 'emit-dte') {
+      dockerArgs.push('-e', `REAL_SII_TEST_CAF_TYPE=${type.code}`);
+    }
+    dockerArgs.push(type.service);
     return commandResult(
-      ['run', '--rm', service],
+      dockerArgs,
       `Emitiendo DTE ${type.code} (${type.name}) en SII Certificacion. Esta operacion consume un folio custodiado.`,
     );
   }
@@ -95,6 +119,9 @@ function resolveCommand(argv) {
     }
     const options = parseOptions(tail);
     const type = requireDteType(options.type);
+    if (![33, 39].includes(type.code)) {
+      throw new Error('retry esta disponible solo para DTE 33 y 39.');
+    }
     const folio = parsePositiveInteger(options.folio, '--folio');
     const tenant = parseTenant(options.tenant);
     if (actionOrOption === 'prepare' && type.code !== 39) {
@@ -174,10 +201,14 @@ function parseOptions(args) {
 function requireDteType(value) {
   if (!value)
     throw new Error(
-      'Falta --type. Valores admitidos: 33, 39, factura, boleta.',
+      `Falta --type. Valores admitidos: ${SUPPORTED_DTE_CODES.join(', ')}.`,
     );
   const type = DTE_TYPES.get(String(value).trim().toLowerCase());
-  if (!type) throw new Error(`Tipo DTE no soportado: ${value}. Use 33 o 39.`);
+  if (!type) {
+    throw new Error(
+      `Tipo DTE no soportado: ${value}. Use ${SUPPORTED_DTE_CODES.join(', ')}.`,
+    );
+  }
   return type;
 }
 
@@ -227,14 +258,15 @@ function assertNoArguments(args, command) {
 
 function printHelp() {
   process.stdout.write(`Uso:
-  pnpm.cmd run sii:cert -- caf acquire --type=<33|39> [--quantity=<1-50>]
-  pnpm.cmd run sii:cert -- caf check --type=<33|39>
-  pnpm.cmd run sii:cert -- emit --type=<33|39>
+  pnpm.cmd run sii:cert -- caf acquire --type=<33|34|39|41|56|61> [--quantity=<1-50>]
+  pnpm.cmd run sii:cert -- caf check --type=<33|34|39|41|56|61>
+  pnpm.cmd run sii:cert -- emit --type=<33|34|39|41|56|61>
   pnpm.cmd run sii:cert -- custody test
   pnpm.cmd run sii:cert -- retry <validate|prepare|reconcile|send> --type=<33|39> --folio=<numero> [--tenant=<id>]
   pnpm.cmd run sii:cert -- down
 
-Aliases de tipo: factura=33, boleta=39.
+Aliases de tipo: factura=33, factura-exenta=34, boleta=39,
+boleta-exenta=41, nota-debito=56, nota-credito=61.
 `);
 }
 

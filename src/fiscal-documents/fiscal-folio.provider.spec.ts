@@ -50,6 +50,42 @@ describe('FiscalFolioProvider', () => {
     ).rejects.toThrow(BadRequestException);
   });
 
+  it('releases only the latest folio reserved before upload', async () => {
+    const provider = new FiscalFolioProvider(
+      mockConfigService({}),
+      mockCustodyService(),
+    );
+    await provider.addCafXml(context, cafXml('11111111-1', 20, 21));
+
+    const first = await provider.getNextFolio(
+      context,
+      TipoDTE.BoletaElectronica,
+    );
+    await provider.releaseLatestFolio(
+      context,
+      TipoDTE.BoletaElectronica,
+      first.folio,
+    );
+    const reused = await provider.getNextFolio(
+      context,
+      TipoDTE.BoletaElectronica,
+    );
+    const second = await provider.getNextFolio(
+      context,
+      TipoDTE.BoletaElectronica,
+    );
+
+    expect(reused.folio).toBe(first.folio);
+    expect(second.folio).toBe(21);
+    await expect(
+      provider.releaseLatestFolio(
+        context,
+        TipoDTE.BoletaElectronica,
+        first.folio,
+      ),
+    ).rejects.toThrow('Solo se puede liberar el ultimo folio');
+  });
+
   it('rejects CAF from a different issuer', async () => {
     const provider = new FiscalFolioProvider(
       mockConfigService({}),
